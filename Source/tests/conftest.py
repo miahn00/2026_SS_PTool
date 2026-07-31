@@ -1,0 +1,11 @@
+"""Source 폴더를 테스트 import 경로로 등록한다."""
+
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+SOURCE_ROOT = Path(__file__).resolve().parents[1]
+if str(SOURCE_ROOT) not in sys.path:
+    sys.path.insert(0, str(SOURCE_ROOT))
+

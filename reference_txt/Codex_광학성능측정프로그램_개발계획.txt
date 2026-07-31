@@ -1,0 +1,1142 @@
+﻿광학 성능 측정 프로그램 개발 계획
+=================================
+
+1. 개발 목적
+------------
+
+Windows 환경에서 카메라의 실시간 RAW16 영상을 수신하거나 저장된 TIFF/JPG 영상을 불러와 다음 광학 성능을 측정하는 프로그램을 개발한다.
+
+- 해상력 및 공간주파수: lp/mm
+- CTF 및 환산 MTF
+- RI: Relative Illumination, 상대조도
+- Distortion: 렌즈 왜곡
+- 측정 기준 대비 PASS/FAIL 자동 판정
+- 판정 영상 및 측정 데이터 저장
+
+
+2. 개발 환경
+------------
+
+필수 조건
+
+- 개발 도구: Visual Studio Code
+- 개발 언어: Python
+- 대상 운영체제: Windows 10/11
+- Python 권장 버전: 3.11 또는 3.12, 64bit
+- UI 프레임워크: PySide6
+- 카메라 연결: 제공된 DLL 직접 호출
+- C# 예제 프로그램은 DLL 사용 방법 분석 및 동작 확인용으로만 사용
+- Visual Studio 프로젝트로 새 프로그램을 개발하지 않음
+
+권장 Python 패키지
+
+- PySide6
+- NumPy
+- OpenCV-Python
+- SciPy
+- tifffile
+- Pillow
+- pyqtgraph
+- openpyxl
+- reportlab 또는 동등 PDF 라이브러리
+
+DLL이 Native DLL이면 Python 표준 라이브러리인 ctypes를 우선 사용한다.
+
+DLL이 .NET Assembly이면 pythonnet 사용을 검토한다.
+
+
+3. 개발 착수 전 DLL 분석
+------------------------
+
+3.1 C# 예제 코드에서 확인할 내용
+
+C# 예제는 Python으로 그대로 변환하지 말고 다음 항목을 분석한다.
+
+- DLL 파일명
+- Native DLL인지 .NET DLL인지
+- x86 또는 x64 여부
+- DLL 의존 파일
+- 카메라 초기화 함수
+- 장치 검색 함수
+- 카메라 연결 및 해제 함수
+- 스트리밍 시작 및 정지 함수
+- 프레임 콜백 등록 방식
+- 단일 프레임 요청 방식 지원 여부
+- 영상 Width, Height 전달 방식
+- Pixel Format
+- RAW 데이터 정렬 방식
+- Byte Order
+- 카메라 설정 함수
+- 오류 코드
+- 종료 순서
+- Calling Convention
+- 구조체 Packing
+- 콜백 Delegate 정의
+
+3.2 우선 확인할 C# 구문
+
+- DllImport
+- CallingConvention
+- StructLayout
+- MarshalAs
+- IntPtr
+- Delegate
+- Callback
+- ushort[]
+- byte[]
+
+3.3 Python 연동 판단
+
+Native DLL
+
+C# 예제에서 DllImport 사용
+→ ctypes 또는 cffi로 직접 호출
+
+.NET DLL
+
+C#에서 using SDKNamespace 후 클래스 생성
+→ pythonnet으로 DLL 로드
+
+C++ 클래스 DLL
+
+C 함수가 Export되지 않고 C++ 클래스만 제공된다면 Python 직접 연결이 어려울 수 있다.
+이 경우에만 별도의 소형 C/C++ Wrapper DLL을 검토한다.
+
+
+4. 전체 프로그램 구조
+---------------------
+
+Camera DLL
+    │
+    ▼
+Python Camera SDK Wrapper
+    │
+    ▼
+Camera Device Manager
+    │
+    ├───────────────┐
+    ▼               ▼
+실시간 RAW16       TIFF/JPG 파일
+    │               │
+    └──────┬────────┘
+           ▼
+    공통 영상 데이터
+    NumPy uint16/uint8
+           │
+     ┌─────┼─────────┐
+     ▼     ▼         ▼
+    MTF    RI    Distortion
+     │     │         │
+     └─────┼─────────┘
+           ▼
+       판정 엔진
+           ▼
+    결과 저장/성적서
+
+
+5. 공통 영상 데이터 구조
+------------------------
+
+카메라 영상과 파일 영상을 같은 구조로 전달한다.
+
+예시:
+
+from dataclasses import dataclass
+from datetime import datetime
+import numpy as np
+
+@dataclass
+class ImageFrame:
+    image: np.ndarray
+    width: int
+    height: int
+    bit_depth: int
+    source_type: str
+    timestamp: datetime
+    frame_number: int = 0
+    source_path: str | None = None
+
+내부 영상 형식
+
+RAW16 및 TIFF16
+- dtype: uint16
+- shape: Height × Width
+
+JPG
+- dtype: uint8
+- shape: Height × Width 또는 Height × Width × 3
+
+JPG는 분석 전에 Gray8로 변환한다.
+
+
+6. 영상 입력 기능
+----------------
+
+6.1 카메라 실시간 연결
+
+필수 기능:
+
+- 연결 가능한 카메라 검색
+- 카메라 목록 표시
+- 카메라 연결
+- 연결 해제
+- 스트리밍 시작
+- 스트리밍 정지
+- 단일 프레임 캡처
+- 현재 연결 상태 표시
+- 프레임 속도 표시
+- 프레임 번호 표시
+- 수신 오류 표시
+- 재연결 기능
+- 프로그램 종료 시 안전한 스트림 정지 및 카메라 해제
+
+6.2 카메라 프레임 처리
+
+카메라 콜백에서는 다음 작업만 수행한다.
+
+1. DLL 버퍼를 Python 또는 NumPy 메모리로 즉시 복사
+2. 프레임 번호와 시간 기록
+3. 최신 프레임 버퍼로 전달
+4. 콜백 즉시 종료
+
+콜백 내부에서 다음 작업을 수행하지 않는다.
+
+- UI 직접 갱신
+- 영상 분석
+- TIFF 저장
+- JPG 저장
+- PDF 생성
+- 장시간 연산
+
+6.3 저장 영상 불러오기
+
+지원 형식:
+
+- 16bit Gray TIFF
+- 8bit Gray TIFF
+- JPG
+- JPEG
+- PNG는 확장 기능으로 추가 가능
+
+파일을 열 때 다음 정보를 표시한다.
+
+- 파일명
+- 해상도
+- Bit Depth
+- 채널 수
+- 데이터 타입
+- 최소값
+- 최대값
+- TIFF 페이지 수
+- 압축 방식
+
+6.4 TIFF 파일 저장
+
+실시간 카메라 영상 캡처 시 다음 형식으로 저장한다.
+
+- 원본 RAW16 TIFF
+- 무손실 저장
+- 카메라 원본 픽셀값 유지
+- 표시용 영상 보정값을 원본 TIFF에 적용하지 않음
+- 판정 ROI 및 결과는 TIFF 원본 데이터와 별도 메타데이터로 저장
+
+선택 저장:
+
+- 원본 TIFF
+- ROI가 표시된 판정용 TIFF
+- 화면 확인용 JPG 또는 PNG
+- 측정 결과 JSON
+
+
+7. 해상도 설정
+-------------
+
+사용자가 영상의 수평·수직 해상도를 입력할 수 있도록 한다.
+
+입력 항목
+
+- Width
+- Height
+
+범위
+
+- 최소 권장: 320×240
+- 기본값: 640×480
+- 최대 권장: 1920×1080, FHD
+- DLL이 지원하는 실제 해상도 목록을 조회할 수 있다면 Dropdown으로 제공
+
+검증 조건
+
+- Width와 Height는 양의 정수
+- 카메라가 지원하지 않는 해상도는 설정 불가
+- 프레임 데이터 크기와 설정 해상도가 일치하는지 확인
+- RAW16 예상 데이터 크기 검증
+
+Expected Bytes = Width × Height × 2
+
+해상도를 변경하면 ROI 좌표와 검사 설정을 재검증한다.
+
+
+8. 카메라 및 광학 설정
+---------------------
+
+입력 기능
+
+- 카메라 모델
+- 렌즈 모델
+- 제품명
+- 제품 또는 렌즈 S/N
+- 수평 해상도
+- 수직 해상도
+- 픽셀 피치, µm
+- 배율
+- 센서 크기
+- 측정 거리
+- 차트 종류
+- 차트 S/N 또는 관리번호
+- 작업자명
+- 검사일시
+
+픽셀 피치
+
+- 단위: µm
+- 기본값 예: 15 µm
+- 입력 범위 검증
+- X/Y Pixel Pitch가 다를 가능성을 고려해 선택적으로 분리 입력 가능
+- 일반 센서에서는 X/Y 동일값을 기본으로 한다.
+
+
+9. UI 기본 구성
+---------------
+
+┌─────────────────────────────────────────────────────────────┐
+│ 파일 │ 카메라 │ 검사설정 │ 결과저장 │ 도움말               │
+├────────────────────────────────┬────────────────────────────┤
+│                                │ 카메라 및 렌즈 설정         │
+│                                │ Width / Height             │
+│      실시간/파일 영상          │ Pixel Pitch                │
+│                                │ 검사 모드                   │
+│      ROI 및 검출 결과 표시      │ MTF / RI / Distortion       │
+│                                │ 목표값 / 측정값 / 판정       │
+│                                │                            │
+├────────────────────────────────┴────────────────────────────┤
+│ 프로파일 / FFT / MTF / RI / Distortion 그래프 / 로그       │
+└─────────────────────────────────────────────────────────────┘
+
+상단 기능
+
+- 카메라 연결
+- 실시간 시작/정지
+- Freeze
+- TIFF 캡처
+- TIFF 열기
+- JPG 열기
+- 검사 시작
+- 자동검사
+- 판정 결과 저장
+- 성적서 생성
+- 설정 저장
+- 설정 불러오기
+
+
+10. 영상 표시 기능
+----------------
+
+필수 기능:
+
+- 실시간 영상 표시
+- 원본 크기 표시
+- 화면 맞춤
+- 확대
+- 축소
+- 마우스 휠 Zoom
+- 영상 이동 Pan
+- 좌표 표시
+- 마우스 위치 RAW 값 표시
+- 표시 Min/Max 설정
+- 자동 Contrast
+- Percentile Stretch
+- 흑백 반전
+- Colormap은 확인용으로만 선택 지원
+
+중요 조건:
+
+분석에는 표시용 8bit 변환영상이 아닌 RAW16 원본 데이터를 사용한다.
+
+
+11. ROI 기능
+-----------
+
+기본 요구사항
+
+- 최대 4개 ROI 생성
+- ROI 이름 표시
+- ROI 선택
+- ROI 이동
+- ROI 크기 변경
+- ROI 삭제
+- 전체 ROI 삭제
+- ROI 활성화/비활성화
+- ROI 좌표 수치 입력
+- ROI 좌표 저장 및 불러오기
+
+추가 권장 기능
+
+- ROI 복사
+- ROI 잠금
+- ROI 색상 구분
+- ROI별 검사 기준 설정
+- ROI별 검사 포함 여부 설정
+- ROI가 영상 밖으로 나가지 않도록 제한
+- 확대/축소 후에도 원본 픽셀 좌표 유지
+- 해상도 변경 시 ROI 비율 유지 또는 초기화 선택
+
+ROI별 설정
+
+- ROI 번호
+- ROI 이름
+- X
+- Y
+- Width
+- Height
+- Nominal lp/mm
+- Target MTF %
+- 측정 방향: Auto/H/V
+- 판정 포함 여부
+
+
+12. MTF/해상력 측정 기능
+-----------------------
+
+12.1 입력값
+
+- 기준 lp/mm
+- 목표 MTF %
+- 주파수 허용오차 %
+- 최소 검출 신뢰도
+- 최소 검출 라인페어 수
+- 프레임 평균 수
+- ROI별 목표값
+- 배율
+- 픽셀 피치
+
+12.2 출력값
+
+- 측정 lp/mm
+- 주파수 오차 %
+- Raw Contrast
+- CTF %
+- 환산 MTF %
+- 패턴 방향
+- 패턴 각도
+- 검출 라인페어 수
+- 측정 신뢰도
+- 프레임별 편차
+- PASS/FAIL
+
+12.3 처리 절차
+
+1. ROI 추출
+2. 이상치 및 Bad Pixel 보정
+3. 배경 기울기 제거
+4. 패턴 방향 자동 검출
+5. 바에 수직인 프로파일 추출
+6. 여러 프로파일 평균
+7. FFT, 자기상관 또는 Peak 간격 분석
+8. 공간주파수 계산
+9. Bright/Dark 평균값 계산
+10. CTF 계산
+11. 설정 방식에 따라 MTF 환산
+12. 기준값 비교
+13. 신뢰도 검증
+14. PASS/FAIL 판정
+
+12.4 회전 차트 처리
+
+- 차트의 화면상 회전각 자동 검출
+- 영상을 실제 회전하지 않고 패턴에 수직인 방향으로 프로파일 추출
+- 각도 신뢰도가 낮으면 판정 보류
+- 차트 원근 기울기가 지나치면 경고 표시
+
+12.5 CTF와 MTF 구분
+
+USAF 또는 Bar Target은 직접적으로 CTF를 측정한다.
+
+프로그램 표시 항목:
+
+- Contrast
+- CTF
+- Converted MTF
+
+사용한 CTF→MTF 환산 방식은 설정과 성적서에 기록한다.
+
+
+13. 실시간 MTF 표시
+------------------
+
+실시간 카메라 측정 시 다음 값을 연속 표시한다.
+
+- 현재 측정 lp/mm
+- 평균 lp/mm
+- 현재 MTF %
+- 평균 MTF %
+- 최소/최대 MTF
+- 표준편차
+- 측정 신뢰도
+- 안정화 상태
+- ROI별 PASS/FAIL
+- 전체 PASS/FAIL
+
+안정 판정 권장
+
+- 최근 16개 측정값 사용
+- 최근 10회 중 8회 이상 기준 충족
+- MTF 표준편차가 허용값 이하
+- lp/mm 주파수 오차가 허용 범위 이내
+- 신뢰도 기준 이상일 때만 최종 판정
+
+
+14. RI 상대조도 측정 기능
+------------------------
+
+14.1 측정 조건
+
+- 균일 흑체 또는 균일 방사면 사용
+- RAW16 사용
+- AGC OFF
+- 카메라 Gain 및 Integration Time 고정
+- NUC 이후 측정
+- 다중 프레임 평균
+
+14.2 입력값
+
+- 중앙 기준 ROI 크기
+- 분석 Grid 수
+- 최소 RI 기준 %
+- 코너 RI 기준 %
+- 좌우 비대칭 허용값 %
+- 상하 비대칭 허용값 %
+- 프레임 평균 수
+- Dark Frame 적용 여부
+
+14.3 출력값
+
+- Center RI = 100%
+- 전체 평균 RI
+- 최소 RI
+- 최소 RI 위치
+- 코너 4개 RI
+- 좌/우 RI
+- 상/하 RI
+- 좌우 비대칭
+- 상하 비대칭
+- RI Heatmap
+- 방사 방향 RI 프로파일
+- PASS/FAIL
+
+14.4 RI ROI 구성
+
+RI는 수동 ROI 4개와 별개로 자동 분석 Grid를 사용할 수 있도록 한다.
+
+예:
+
+- 3×3
+- 5×5
+- 7×5
+- 9×7
+
+사용자가 중앙 및 코너 ROI 크기를 조절할 수 있도록 한다.
+
+
+15. Distortion 측정 기능
+-----------------------
+
+15.1 차트 정보 입력
+
+- 차트 종류: Dot/Grid/Checkerboard
+- 행 개수
+- 열 개수
+- 점 간격, mm
+- 점 크기
+- 기준 중심점
+- 차트 유효 크기
+- 차트 관리번호
+
+15.2 판정 기준 입력
+
+- 최대 Distortion %
+- 평균 Distortion %
+- X 방향 최대 왜곡 %
+- Y 방향 최대 왜곡 %
+- 차트 검출점 최소 개수
+- 검출 신뢰도
+- 차트 기울기 허용범위
+- 재투영 오차 허용값
+
+15.3 출력값
+
+- 최대 Distortion %
+- 평균 Distortion %
+- 중심부 왜곡
+- 주변부 왜곡
+- X 방향 왜곡
+- Y 방향 왜곡
+- Barrel/Pincushion 유형
+- 검출된 점 개수
+- 미검출 점 개수
+- 재투영 오차
+- 왜곡 벡터맵
+- 이상 좌표와 실측 좌표 중첩
+- PASS/FAIL
+
+15.4 처리 절차
+
+1. Dot 또는 Grid 검출
+2. Sub-pixel 중심 계산
+3. 행/열 인덱싱
+4. 차트 이동, 회전, 크기 보정
+5. 원근변환 추정
+6. 이상적인 점 좌표 생성
+7. 실측 좌표와 비교
+8. 방사 왜곡 및 접선 왜곡 계산
+9. 최대/평균 왜곡 계산
+10. 기준치 판정
+
+15.5 설치오차 경고
+
+다음 조건에서는 자동 판정하지 않고 경고한다.
+
+- 차트 검출점 부족
+- 차트가 영상 전체를 충분히 덮지 못함
+- 차트가 크게 기울어짐
+- 차트 평탄도 불량
+- 검출점 순서 인식 실패
+- 재투영 오차 초과
+
+
+16. 기준값 및 판정 기능
+----------------------
+
+공통 판정 상태
+
+- PASS
+- FAIL
+- INVALID
+- NOT MEASURED
+
+INVALID는 분석 실패 또는 측정 신뢰도 부족을 의미한다.
+
+MTF 판정 예
+
+주파수 오차 ≤ 허용값
+AND
+측정 MTF ≥ 기준 MTF
+AND
+검출 신뢰도 ≥ 기준
+AND
+측정 안정도 충족
+
+RI 판정 예
+
+최소 RI ≥ 기준
+AND
+코너 RI ≥ 기준
+AND
+상하/좌우 비대칭 ≤ 허용값
+
+Distortion 판정 예
+
+최대 절대 Distortion ≤ 기준
+AND
+평균 Distortion ≤ 기준
+AND
+검출점 수 ≥ 최소값
+AND
+재투영 오차 ≤ 기준
+
+전체 판정
+
+활성화된 검사 항목 및 ROI가 모두 PASS인 경우에만 전체 PASS로 한다.
+
+Overall PASS =
+모든 활성 ROI PASS
+AND
+모든 활성 검사 모드 PASS
+
+
+17. 판정 이미지 저장
+--------------------
+
+저장 대상
+
+- 원본 RAW16 TIFF
+- 판정 결과가 표시된 TIFF
+- 표시용 PNG 또는 JPG
+- ROI 확대영상
+- 프로파일 그래프
+- FFT 그래프
+- RI Heatmap
+- Distortion Vector Map
+
+판정 이미지 표시 내용
+
+- 제품명
+- S/N
+- 검사일시
+- 검사 모드
+- ROI 번호
+- 목표값
+- 측정값
+- PASS/FAIL
+- 프로그램 버전
+- 설정 파일명
+
+주의사항
+
+RAW16 TIFF 원본 픽셀 위에 문자나 ROI를 직접 그리면 원본값이 훼손된다.
+
+따라서 기본 저장은 다음처럼 분리한다.
+
+- Original_RAW16.tiff
+- Result_Overlay.png
+- Result_Data.json
+
+사용자가 요청한 판정 TIFF는 별도 복사본으로 저장한다.
+
+- Result_Annotated.tiff
+
+원본 TIFF는 항상 무수정 상태로 보존한다.
+
+
+18. 검사 설정 관리
+------------------
+
+검사 설정은 JSON 파일로 저장한다.
+
+설정 항목
+
+- 카메라 모델
+- 렌즈 모델
+- 해상도
+- 픽셀 피치
+- 배율
+- ROI 좌표
+- ROI 목표 lp/mm
+- ROI 목표 MTF %
+- RI 기준
+- Distortion 기준
+- 프레임 평균 수
+- 표시 범위
+- 차트 정보
+- 알고리즘 옵션
+- 판정 기준
+- 저장 경로
+
+설정 기능
+
+- 새 설정
+- 설정 저장
+- 다른 이름으로 저장
+- 설정 불러오기
+- 최근 설정 불러오기
+- 기본 설정 복원
+- 설정 변경 여부 표시
+- 설정 버전 관리
+
+
+19. 결과 저장 및 성적서
+-----------------------
+
+결과 저장 형식
+
+- JSON: 전체 상세 결과
+- CSV: 측정 요약
+- XLSX: 검사 결과표
+- PDF: 검사 성적서
+- TIFF: 원본
+- PNG/JPG: 판정 오버레이
+
+성적서 내용
+
+- 제품 정보
+- 카메라 정보
+- 렌즈 정보
+- 차트 정보
+- 검사 환경
+- 검사 설정
+- 원본 영상
+- ROI 영상
+- 목표값
+- 측정값
+- 그래프
+- 신뢰도
+- ROI별 판정
+- 검사별 판정
+- 전체 판정
+- 프로그램 버전
+- 알고리즘 버전
+- 설정 파일 Hash
+- 검사일시
+- 작업자
+
+
+20. 로그 및 오류 처리
+--------------------
+
+로그 항목
+
+- 프로그램 시작/종료
+- DLL 로드 성공/실패
+- 카메라 연결/해제
+- 스트림 시작/정지
+- 프레임 수신 오류
+- 파일 열기 오류
+- 검사 시작/완료
+- 알고리즘 오류
+- 저장 성공/실패
+- 설정 변경
+- 예외 Stack Trace
+
+주요 오류 메시지
+
+- DLL을 찾을 수 없음
+- DLL과 Python Bit 수 불일치
+- DLL 의존 파일 누락
+- 카메라를 찾을 수 없음
+- 카메라 연결 실패
+- 지원하지 않는 해상도
+- 프레임 데이터 크기 불일치
+- TIFF가 16bit Gray 형식이 아님
+- ROI가 너무 작음
+- 패턴 검출 실패
+- 측정 신뢰도 부족
+- 차트 기울기 초과
+- 저장 경로 쓰기 실패
+
+
+21. 스레드 구성
+---------------
+
+Main UI Thread
+    ├─ Camera Worker
+    ├─ Display Worker
+    ├─ Analysis Worker
+    └─ Report Worker
+
+동작 원칙
+
+- UI 스레드에서는 장시간 연산 금지
+- 카메라 콜백에서는 프레임 복사만 수행
+- 최신 프레임만 유지
+- 분석이 느릴 경우 과거 프레임 폐기
+- 카메라 표시 속도와 분석 속도를 분리
+
+권장 속도
+
+- 실시간 표시: 최대 15~30 fps
+- 실시간 분석: 2~5 fps
+- 최종 판정: 8~16개 결과 평균
+- 저장: 판정 확정 시 1회
+
+
+22. 권장 프로젝트 폴더 구조
+--------------------------
+
+OpticsInspector/
+├─ app.py
+├─ requirements.txt
+├─ README.md
+├─ config/
+│  ├─ default_settings.json
+│  └─ inspection_profiles/
+├─ camera/
+│  ├─ sdk_loader.py
+│  ├─ sdk_types.py
+│  ├─ camera_device.py
+│  ├─ camera_worker.py
+│  └─ mock_camera.py
+├─ imaging/
+│  ├─ frame.py
+│  ├─ tiff_io.py
+│  ├─ image_loader.py
+│  ├─ display_converter.py
+│  └─ frame_buffer.py
+├─ inspection/
+│  ├─ common/
+│  ├─ mtf/
+│  │  ├─ analyzer.py
+│  │  ├─ orientation.py
+│  │  ├─ frequency.py
+│  │  └─ result.py
+│  ├─ ri/
+│  │  ├─ analyzer.py
+│  │  └─ result.py
+│  └─ distortion/
+│     ├─ detector.py
+│     ├─ analyzer.py
+│     └─ result.py
+├─ ui/
+│  ├─ main_window.py
+│  ├─ image_view.py
+│  ├─ roi_item.py
+│  ├─ settings_panel.py
+│  └─ result_panel.py
+├─ reporting/
+│  ├─ result_writer.py
+│  ├─ excel_report.py
+│  └─ pdf_report.py
+├─ models/
+├─ utils/
+├─ tests/
+└─ sdk/
+   ├─ CameraLib.dll
+   └─ dependencies/
+
+
+23. 단계별 개발 계획
+--------------------
+
+1단계: DLL 연동 검증
+
+목표:
+
+- Python에서 DLL 로드
+- SDK 초기화
+- 카메라 검색
+- 카메라 Open/Close
+- 단일 프레임 수신
+- 프레임을 TIFF로 저장
+
+완료 기준:
+
+- 카메라 한 대에 연결
+- 640×480 RAW16 프레임 1장 수신
+- uint16 NumPy 배열 변환
+- TIFF 저장 후 원본 데이터 비교
+
+2단계: 기본 UI
+
+- PySide6 Main Window
+- 카메라 연결/해제
+- Live 시작/정지
+- TIFF/JPG 열기
+- 영상 확대/축소
+- Pixel 값 표시
+- 해상도 입력
+- 픽셀 피치 입력
+
+3단계: ROI
+
+- ROI 최대 4개
+- 생성
+- 이동
+- 크기 변경
+- 삭제
+- 저장/복원
+- 원본 좌표 유지
+
+4단계: MTF
+
+- 패턴 방향 자동 검출
+- lp/mm 계산
+- CTF 계산
+- MTF 환산
+- 실시간 표시
+- 기준 입력
+- ROI별 판정
+- 안정화 판정
+
+5단계: RI
+
+- Grid 분석
+- Center 정규화
+- Corner RI
+- Minimum RI
+- 비대칭
+- Heatmap
+- 판정
+
+6단계: Distortion
+
+- Dot/Grid 자동 검출
+- Sub-pixel 좌표
+- 원근 보정
+- Distortion 계산
+- Vector Map
+- 판정
+
+7단계: 저장 및 성적서
+
+- 판정 TIFF
+- Overlay PNG
+- JSON
+- CSV/XLSX
+- PDF 성적서
+- 설정 프리셋
+
+8단계: 배포
+
+- PyInstaller 또는 Nuitka
+- 설치 폴더에 DLL 포함
+- DLL 의존성 검사
+- 개발환경이 없는 PC에서 실행 시험
+- 카메라 연결 및 파일 검사 시험
+
+
+24. 테스트 항목
+---------------
+
+DLL 및 카메라
+
+- DLL 누락
+- 의존 DLL 누락
+- 카메라 미연결
+- 연결 중 분리
+- 반복 연결/해제
+- 스트리밍 중 프로그램 종료
+- 해상도 변경
+- 프레임 크기 불일치
+
+파일 입력
+
+- 정상 16bit TIFF
+- 압축 TIFF
+- Multi-page TIFF
+- 8bit TIFF
+- JPG
+- 잘못된 확장자
+- 손상된 파일
+- 다른 해상도 파일
+
+ROI
+
+- 작은 ROI
+- 영상 경계 ROI
+- 겹치는 ROI
+- 확대 후 이동
+- 해상도 변경 후 ROI
+
+분석
+
+- 회전된 USAF 패턴
+- 낮은 Contrast
+- 초점 불량
+- 포화 영상
+- 균일하지 않은 흑체
+- Distortion 점 일부 미검출
+- 차트 원근 기울기
+
+판정
+
+- PASS
+- FAIL
+- INVALID
+- 기준값 경계
+- 실시간 측정값 흔들림
+- 설정 변경 후 재판정
+
+
+25. Codex 작업 원칙
+------------------
+
+1. 한 번에 전체 프로그램을 작성하지 않는다.
+2. DLL 연결 검증부터 단계별로 진행한다.
+3. 각 단계마다 실행 가능한 코드를 유지한다.
+4. UI와 알고리즘을 분리한다.
+5. 카메라 SDK 종속 코드를 camera 폴더로 제한한다.
+6. 카메라 없이도 개발할 수 있도록 MockCamera를 구현한다.
+7. MTF, RI, Distortion 모듈을 독립적으로 구현한다.
+8. 분석 함수는 UI에 종속되지 않도록 한다.
+9. 각 알고리즘에 단위 테스트를 작성한다.
+10. RAW16 원본 데이터는 절대 표시용 변환으로 변경하지 않는다.
+11. 예외를 무시하지 않고 로그에 기록한다.
+12. 함수 및 클래스에 Type Hint를 적용한다.
+13. 주요 API에는 한국어 또는 영어 Docstring을 작성한다.
+14. 설정과 결과는 JSON 직렬화 가능하게 설계한다.
+15. 테스트 영상으로 결과 재현이 가능하도록 한다.
+
+
+26. 초기 Codex 전달용 작업 지시문
+-------------------------------
+
+Windows용 광학 성능 측정 프로그램을 Python으로 개발한다.
+
+개발 도구는 Visual Studio Code를 사용하고, UI는 PySide6로 구성한다.
+기존 C# 카메라 예제는 새 프로그램에 사용하지 않고, 제공된 Camera DLL의
+함수 호출 방법, 구조체, 콜백, 초기화 및 종료 순서를 분석하는 참고자료로만 사용한다.
+
+우선 전체 프로그램을 작성하지 말고 다음 순서로 진행한다.
+
+1. C# 예제에서 DLL 유형, DllImport, CallingConvention, 구조체, Callback,
+   Camera Open/Close, Stream Start/Stop, Frame 수신 순서를 분석한다.
+2. Python에서 DLL을 로드할 수 있는 최소 테스트 프로젝트를 작성한다.
+3. Python과 DLL의 x86/x64 일치 여부와 의존 DLL을 검사한다.
+4. 카메라 검색, 연결, 단일 RAW16 프레임 수신을 구현한다.
+5. 수신 프레임을 uint16 NumPy 배열로 변환하고 TIFF로 무손실 저장한다.
+6. 카메라가 없어도 UI와 알고리즘을 개발할 수 있도록 MockCamera를 구현한다.
+
+최종 프로그램 기능은 다음과 같다.
+
+- 카메라 실시간 RAW16 영상 수신 및 표시
+- 단일 프레임 캡처 및 RAW16 TIFF 저장
+- TIFF/JPG 영상 불러오기
+- 해상도 Width/Height 입력 및 설정
+- 기본 해상도 640×480
+- 지원 범위 320급부터 FHD까지
+- 픽셀 피치 입력
+- ROI 최대 4개 생성, 이동, 크기 변경, 삭제
+- ROI별 기준 lp/mm 및 MTF % 입력
+- 실시간 측정 lp/mm 및 MTF % 표시
+- 패턴 회전각 자동 검출
+- MTF/CTF 자동 측정 및 PASS/FAIL
+- RI 기준 입력, 측정, Heatmap, PASS/FAIL
+- Distortion 차트 정보와 기준 입력, 측정, Vector Map, PASS/FAIL
+- 검사 설정 JSON 저장 및 불러오기
+- 판정 원본 RAW16 TIFF 보존
+- ROI와 결과가 표시된 판정 이미지 별도 저장
+- 결과 JSON, CSV/XLSX, PDF 성적서 저장
+- PASS, FAIL, INVALID 상태 구분
+- 프로그램 로그 및 오류 처리
+
+프로젝트는 다음 계층을 분리한다.
+
+- camera: DLL 및 카메라 제어
+- imaging: RAW16/TIFF/JPG 및 표시 변환
+- inspection: MTF, RI, Distortion
+- ui: PySide6 화면 및 ROI
+- reporting: 결과 저장 및 성적서
+- tests: 단위 테스트
+
+모든 분석 알고리즘은 카메라와 파일 입력을 동일한 NumPy 영상 데이터로
+처리하도록 구현한다. UI 스레드에서 영상 분석을 수행하지 말고 Camera,
+Analysis, Report Worker를 분리한다.
+
+첫 작업에서는 C# 예제와 DLL을 분석한 결과를 문서화하고,
+Python에서 DLL 로드 및 카메라 Open/Close 시험 코드만 작성한다.
+확인되지 않은 DLL 함수명이나 구조체를 임의로 가정하지 말고,
+C# 예제 또는 SDK 헤더에서 확인한 내용만 사용한다.
+
+
+27. 최종 검토 결과
+------------------
+
+현재 요구사항으로 Python 단독 UI·분석 프로그램 개발 방향은 타당하다.
+
+추가되어야 하는 핵심 항목:
+
+- DLL 종류, x86/x64, 의존성 검증
+- RAW16 원본과 표시영상 분리
+- 카메라가 없어도 개발 가능한 Mock Camera
+- MTF가 아닌 CTF 직접 측정값 구분
+- 단일 프레임이 아닌 실시간 안정화 판정
+- RI용 자동 Grid 분석
+- Distortion 차트의 행/열 및 간격 입력
+- PASS/FAIL 외 INVALID 상태
+- 원본 TIFF와 판정 오버레이 파일 분리
+- 검사 설정 및 알고리즘 버전 저장
+- 로그와 예외 처리
+- 단계별 단위 테스트
+- 배포 PC에서 DLL 의존성 시험
+
+가장 먼저 진행할 작업은 UI가 아니라 DLL 직접 연동 가능 여부 확인과 RAW16 한 프레임 수신이다.
+이 단계가 성공하면 이후 PySide6 UI와 세 가지 분석 기능은 독립적으로 빠르게 개발할 수 있다.
