@@ -7,8 +7,10 @@ import numpy as np
 import pytest
 
 from inspection.slanted_edge import (
+    _quality_assessment,
     calculate_slanted_edge_mtf_curve,
     measure_slanted_edge,
+    sample_mtf_curve_at_1_lpmm,
 )
 
 
@@ -37,6 +39,20 @@ def test_slanted_edge_creates_object_side_mtf_curve() -> None:
     assert curve.source_method == "SLANTED_EDGE"
     assert curve.frequency_range_lpmm[1] <= 50.0
     assert curve.mtf_percent[0] > curve.mtf_percent[-1]
+
+
+def test_curve_is_sampled_at_integer_lpmm_without_extrapolation() -> None:
+    curve, *_ = calculate_slanted_edge_mtf_curve(
+        _slanted_edge(1.2), 10, 10, 1
+    )
+
+    frequency, mtf = sample_mtf_curve_at_1_lpmm(curve)
+
+    assert frequency[0] == 0.0
+    assert mtf[0] == 100.0
+    assert np.all(np.diff(frequency) == 1.0)
+    assert frequency[-1] <= curve.frequency_range_lpmm[1]
+    assert np.all((mtf >= 0) & (mtf <= 100))
 
 
 def test_slanted_edge_returns_mtf_at_reference_and_pass() -> None:
@@ -73,6 +89,21 @@ def test_reference_near_nyquist_has_quality_warning() -> None:
     assert result.reference_to_nyquist_ratio is not None
     assert result.reference_to_nyquist_ratio >= 0.8
     assert "Nyquist" in result.quality_message
+
+
+def test_saturated_synthetic_edge_does_not_raise_quality_warning() -> None:
+    grade, message = _quality_assessment(
+        r_squared=0.99,
+        contrast_percent=80.0,
+        reference_to_nyquist_ratio=0.5,
+        esf_bin_coverage_percent=100.0,
+        subpixel_phase_bins=4,
+        saturation_percent=99.0,
+        secondary_edge_ratio=0.0,
+    )
+
+    assert grade == "GOOD"
+    assert "포화 픽셀이 많습니다" not in message
 
 
 def test_more_blur_reduces_slanted_edge_mtf() -> None:

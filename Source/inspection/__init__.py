@@ -40,6 +40,7 @@ from .slanted_edge import (
     SlantedEdgeResult,
     calculate_slanted_edge_mtf_curve,
     measure_slanted_edge,
+    sample_mtf_curve_at_1_lpmm,
 )
 from .slanted_edge_batch import (
     BatchSlantedEdgeResult,
@@ -87,5 +88,6 @@ __all__ = [
     "measure_rois_mtf",
     "calculate_slanted_edge_mtf_curve",
     "measure_slanted_edge",
+    "sample_mtf_curve_at_1_lpmm",
     "measure_rois_slanted_edge",
 ]

@@ -42,6 +42,29 @@ class SlantedEdgeResult:
     evaluation: MtfCurveEvaluationResult | None
 
 
+def sample_mtf_curve_at_1_lpmm(
+    curve: MtfCurve,
+) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
+    """Interpolate a measured curve at integer object-side lp/mm points.
+
+    Only points inside the measured curve are interpolated.  The normalized
+    DC point (0 lp/mm, 100%) is included explicitly; no values beyond the
+    measured upper frequency are extrapolated.
+    """
+    lower, upper = curve.frequency_range_lpmm
+    integer_frequency = np.arange(1.0, math.floor(upper) + 1.0, dtype=np.float64)
+    integer_frequency = integer_frequency[integer_frequency >= lower]
+    integer_mtf = np.interp(
+        integer_frequency,
+        curve.frequency_lpmm,
+        curve.mtf_percent,
+    )
+    return (
+        np.r_[0.0, integer_frequency],
+        np.r_[100.0, integer_mtf],
+    )
+
+
 def _quality_assessment(
     r_squared: float,
     contrast_percent: float,
@@ -84,8 +107,6 @@ def _quality_assessment(
         reasons.append(
             f"Subpixel phase가 일부 부족합니다 ({subpixel_phase_bins}/4 bins)."
         )
-    if saturation_percent >= 5.0:
-        reasons.append(f"포화 픽셀이 많습니다 ({saturation_percent:.1f}%).")
     if secondary_edge_ratio >= 0.3:
         reasons.append(
             f"보조 Edge 성분이 감지되었습니다 (비율 {secondary_edge_ratio:.2f})."

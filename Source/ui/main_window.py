@@ -52,6 +52,7 @@ from ui.image_viewer import ImageViewer
 from ui.optical_settings_dialog import OpticalSettingsDialog
 from ui.ri_contour_dialog import RiContourDialog
 from ui.distortion_result_dialog import DistortionResultDialog
+from ui.slanted_edge_curve_dialog import SlantedEdgeCurveDialog
 
 
 class MainWindow(QMainWindow):
@@ -70,6 +71,7 @@ class MainWindow(QMainWindow):
         self._optical_settings, settings_notice = self._load_or_create_settings()
         self._ri_contour_dialog: RiContourDialog | None = None
         self._distortion_result_dialog: DistortionResultDialog | None = None
+        self._slanted_edge_curve_dialog: SlantedEdgeCurveDialog | None = None
 
         self.setWindowTitle("SS Optical Performance Tool")
         self.resize(1280, 900)
@@ -287,7 +289,7 @@ class MainWindow(QMainWindow):
             self,
             "영상 파일 열기",
             "",
-            "영상 파일 (*.tif *.tiff *.jpg *.jpeg);;TIFF (*.tif *.tiff);;JPEG (*.jpg *.jpeg)",
+            "영상 파일 (*.tif *.tiff *.jpg *.jpeg *.png);;TIFF (*.tif *.tiff);;JPEG (*.jpg *.jpeg);;PNG (*.png)",
         )
         if not file_path:
             return
@@ -858,6 +860,21 @@ class MainWindow(QMainWindow):
             self.global_lp_spin.value(),
             self.global_mtf_spin.value(),
         )
+        if self._slanted_edge_curve_dialog is not None:
+            self._slanted_edge_curve_dialog.close()
+        source_path = getattr(self._frame, "source_path", None)
+        source_filename = Path(source_path).name if source_path else "-"
+        self._slanted_edge_curve_dialog = SlantedEdgeCurveDialog(
+            result,
+            reference_frequency_lpmm=self.global_lp_spin.value(),
+            target_mtf_percent=self.global_mtf_spin.value(),
+            analyzed_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            source_filename=source_filename,
+            parent=self,
+        )
+        self._slanted_edge_curve_dialog.show()
+        self._slanted_edge_curve_dialog.raise_()
+        self._slanted_edge_curve_dialog.activateWindow()
         self.viewer.clear_measurement_results()
         for item in result.roi_results:
             evaluation = item.result.evaluation

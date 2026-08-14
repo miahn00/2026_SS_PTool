@@ -589,3 +589,17 @@ WARNING
 - 동일 영상 및 반복 촬영의 평균, 표준편차와 최대 편차 확인
 - Gamma, Gain, Exposure, Sharpening 및 NUC 조건 기록
 - 검증 완료 후 제품별 PASS/FAIL 기준 확정
+
+Slanted Edge 전체 MTF 곡선 표시 추가
+- 전체 ROI 검사 후 ROI 1~4의 object-side MTF 곡선을 한 팝업에 표시한다.
+- 원 계산 곡선과 측정 범위 안에서 1 lp/mm 단위로 선형 보간한 점을 함께 표시한다.
+- 0 lp/mm는 정규화 기준인 MTF 100%로 표시한다.
+- 각 ROI의 Nyquist 주파수 이내 값만 표시하고 범위 밖 외삽은 하지 않는다.
+- 평가 주파수는 세로 점선, 목표 MTF는 가로 점선으로 표시한다.
+- 팝업에 분석 날짜와 파일명을 표시하며 Matplotlib 도구로 그래프 이미지를 저장할 수 있다.
+- 1 lp/mm 값은 별도의 독립 측정값이 아니라 연속 Slanted Edge MTF 곡선의 보간값이다.
+
+Slanted Edge 포화 표시 정책 변경
+- 합성 검증 이미지처럼 흑백 영역이 데이터 최소/최대값인 경우에도 "포화 픽셀이 많습니다"를 품질 경고 사유로 표시하지 않는다.
+- 포화율 계산값과 결과표의 참고 수치는 유지한다.
+- Edge 직선 적합도, 대비, ESF sampling, subpixel phase 및 복수 Edge 검증은 기존대로 유지한다.

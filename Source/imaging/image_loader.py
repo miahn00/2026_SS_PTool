@@ -11,7 +11,7 @@ import tifffile
 
 from .image_frame import ImageFrame
 
-SUPPORTED_EXTENSIONS = {".tif", ".tiff", ".jpg", ".jpeg"}
+SUPPORTED_EXTENSIONS = {".tif", ".tiff", ".jpg", ".jpeg", ".png"}
 SUPPORTED_DTYPES = {np.dtype(np.uint8), np.dtype(np.uint16)}
 
 
@@ -55,15 +55,19 @@ def _load_tiff(path: Path) -> tuple[np.ndarray, int, dict[str, object]]:
     return image, page_count, metadata
 
 
-def _load_jpeg(path: Path) -> tuple[np.ndarray, int, dict[str, object]]:
+def _load_pillow_image(path: Path) -> tuple[np.ndarray, int, dict[str, object]]:
     with Image.open(path) as pil_image:
         pil_image.load()
-        if pil_image.mode not in {"L", "RGB"}:
+        original_mode = pil_image.mode
+        if pil_image.mode not in {"L", "RGB", "I;16", "I;16L", "I;16B"}:
             pil_image = pil_image.convert("RGB")
         image = np.asarray(pil_image).copy()
+        if image.dtype.byteorder == ">":
+            image = image.astype(np.uint16)
         metadata: dict[str, object] = {
-            "format": pil_image.format or "JPEG",
+            "format": path.suffix.lstrip(".").upper(),
             "mode": pil_image.mode,
+            "original_mode": original_mode,
         }
     return image, 1, metadata
 
@@ -85,7 +89,7 @@ def load_image(file_path: str | Path) -> ImageFrame:
         if extension in {".tif", ".tiff"}:
             image, page_count, metadata = _load_tiff(path)
         else:
-            image, page_count, metadata = _load_jpeg(path)
+            image, page_count, metadata = _load_pillow_image(path)
     except (OSError, ValueError, tifffile.TiffFileError, UnidentifiedImageError) as exc:
         raise ImageLoadError(f"영상 파일을 읽을 수 없습니다: {path}") from exc
 
@@ -107,4 +111,3 @@ def load_image(file_path: str | Path) -> ImageFrame:
         page_count=page_count,
         metadata=metadata,
     )
-

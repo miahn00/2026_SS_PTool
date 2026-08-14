@@ -67,6 +67,49 @@ def test_load_rgb_jpeg(tmp_path) -> None:
     assert frame.image.dtype == np.uint8
 
 
+def test_load_rgb_png(tmp_path) -> None:
+    source = np.zeros((7, 9, 3), dtype=np.uint8)
+    source[:, :, 1] = 173
+    path = tmp_path / "sample.png"
+    Image.fromarray(source, mode="RGB").save(path)
+
+    frame = load_image(path)
+
+    assert (frame.width, frame.height) == (9, 7)
+    assert frame.bit_depth == 8
+    assert frame.channels == 3
+    assert np.array_equal(frame.image, source)
+    assert frame.metadata["format"] == "PNG"
+
+
+def test_load_rgba_png_discards_alpha_channel(tmp_path) -> None:
+    source = np.zeros((6, 8, 4), dtype=np.uint8)
+    source[:, :, :3] = (10, 20, 30)
+    source[:, :, 3] = 100
+    path = tmp_path / "alpha.png"
+    Image.fromarray(source, mode="RGBA").save(path)
+
+    frame = load_image(path)
+
+    assert frame.channels == 3
+    assert frame.image.shape == (6, 8, 3)
+    assert np.all(frame.image == (10, 20, 30))
+    assert frame.metadata["original_mode"] == "RGBA"
+
+
+def test_load_16bit_grayscale_png_preserves_pixels(tmp_path) -> None:
+    source = np.array([[0, 256], [32768, 65535]], dtype=np.uint16)
+    path = tmp_path / "gray16.png"
+    Image.fromarray(source).save(path)
+
+    frame = load_image(path)
+
+    assert frame.bit_depth == 16
+    assert frame.channels == 1
+    assert frame.image.dtype == np.uint16
+    assert np.array_equal(frame.image, source)
+
+
 def test_load_first_page_and_report_page_count(tmp_path) -> None:
     pages = np.stack(
         [
