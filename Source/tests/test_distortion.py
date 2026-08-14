@@ -4,7 +4,11 @@ import numpy as np
 import pytest
 import cv2
 
-from inspection.distortion import analyze_checkerboard, measure_grid_distortion
+from inspection.distortion import (
+    analyze_checkerboard,
+    estimate_checkerboard_size,
+    measure_grid_distortion,
+)
 
 
 def test_identical_grid_has_zero_distortion() -> None:
@@ -52,3 +56,17 @@ def test_checkerboard_image_is_detected_with_small_rotation() -> None:
     assert result.status == "VALID"
     assert result.valid_point_count >= 60
     assert result.smia_tv_distortion_percent == pytest.approx(0, abs=0.2)
+
+
+def test_checkerboard_size_is_estimated_from_repeating_grid() -> None:
+    square = 32
+    rows, columns = 16, 20
+    chart = np.zeros((rows * square, columns * square), dtype=np.uint8)
+    for row in range(rows):
+        for column in range(columns):
+            chart[
+                row * square : (row + 1) * square,
+                column * square : (column + 1) * square,
+            ] = 192 if (row + column) % 2 else 64
+
+    assert estimate_checkerboard_size(chart) == (19, 15)

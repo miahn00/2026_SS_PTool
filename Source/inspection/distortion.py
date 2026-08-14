@@ -10,11 +10,13 @@ single signed SMIA-style TV distortion summary.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import time
 
 import cv2
 import numpy as np
 from numpy.typing import NDArray
 from scipy.optimize import least_squares
+from scipy.signal import find_peaks
 
 
 @dataclass(slots=True, frozen=True)
@@ -87,13 +89,56 @@ def _to_gray_u8(image: NDArray[np.generic]) -> NDArray[np.uint8]:
     return scaled.astype(np.uint8)
 
 
-def _candidate_pattern_sizes(width: int, height: int) -> list[tuple[int, int]]:
+def _estimate_grid_period(signal: NDArray[np.float64]) -> float | None:
+    centered = np.asarray(signal, dtype=np.float64) - float(np.mean(signal))
+    if not np.any(centered):
+        return None
+    correlation = np.correlate(centered, centered, mode="full")[centered.size - 1 :]
+    if correlation[0] <= np.finfo(float).eps:
+        return None
+    correlation /= correlation[0]
+    minimum_lag = 4
+    maximum_lag = max(minimum_lag + 1, centered.size // 3)
+    peaks, properties = find_peaks(
+        correlation[minimum_lag:maximum_lag], prominence=0.025
+    )
+    if peaks.size == 0:
+        return None
+    lags = peaks + minimum_lag
+    prominences = properties["prominences"]
+    credible = lags[prominences >= max(0.025, float(prominences.max()) * 0.15)]
+    return float(credible[0]) if credible.size else None
+
+
+def estimate_checkerboard_size(
+    gray: NDArray[np.uint8],
+) -> tuple[int, int] | None:
+    """Estimate inner-corner columns/rows from repeating edge spacing."""
+    gradient_x = np.abs(cv2.Sobel(gray, cv2.CV_32F, 1, 0, ksize=3))
+    gradient_y = np.abs(cv2.Sobel(gray, cv2.CV_32F, 0, 1, ksize=3))
+    period_x = _estimate_grid_period(gradient_x.mean(axis=0))
+    period_y = _estimate_grid_period(gradient_y.mean(axis=1))
+    if period_x is None or period_y is None:
+        return None
+    height, width = gray.shape
+    columns = int(round(width / period_x)) - 1
+    rows = int(round(height / period_y)) - 1
+    if not (4 <= columns <= 39 and 4 <= rows <= 31):
+        return None
+    return columns, rows
+
+
+def _candidate_pattern_sizes(
+    width: int,
+    height: int,
+    estimated_size: tuple[int, int] | None = None,
+) -> list[tuple[int, int]]:
     """Return likely inner-corner sizes without assuming a fixed chart."""
     image_ratio = width / max(height, 1)
     candidates = [
         (columns, rows)
-        for rows in range(5, 15)
-        for columns in range(5, 21)
+        for rows in range(4, 32)
+        for columns in range(4, 40)
         if columns * rows >= 30
     ]
     # Full-board detection is expensive.  Aspect agreement is a strong prior,
@@ -106,6 +151,7 @@ def _candidate_pattern_sizes(width: int, height: int) -> list[tuple[int, int]]:
         ),
     )
     common_partial_sizes = [
+        (19, 15),
         (12, 8),
         (15, 11),
         (14, 10),
@@ -116,9 +162,31 @@ def _candidate_pattern_sizes(width: int, height: int) -> list[tuple[int, int]]:
         (11, 8),
         (13, 10),
     ]
-    return common_partial_sizes + [
-        size for size in ordered if size not in common_partial_sizes
-    ]
+    estimated_sizes: list[tuple[int, int]] = []
+    if estimated_size is not None:
+        estimated_columns, estimated_rows = estimated_size
+        for radius in range(0, 4):
+            for row_delta in range(-radius, radius + 1):
+                for column_delta in range(-radius, radius + 1):
+                    if max(abs(column_delta), abs(row_delta)) != radius:
+                        continue
+                    size = (
+                        estimated_columns + column_delta,
+                        estimated_rows + row_delta,
+                    )
+                    if 4 <= size[0] <= 39 and 4 <= size[1] <= 31:
+                        estimated_sizes.append(size)
+    # Try the exact period estimate first, then common production/validation
+    # grids before expanding around a potentially distortion-shifted estimate.
+    priority = estimated_sizes[:1] + common_partial_sizes + estimated_sizes[1:]
+    unique_priority = list(dict.fromkeys(priority))
+    # Cap the expensive fallback. Valid repeating charts should be found from
+    # the period estimate; the remainder handles less regular partial charts.
+    return unique_priority + [
+        size
+        for size in ordered
+        if size not in unique_priority
+    ][:80]
 
 
 def detect_partial_checkerboard(
@@ -141,8 +209,11 @@ def detect_partial_checkerboard(
         | cv2.CALIB_CB_ACCURACY
         | cv2.CALIB_CB_NORMALIZE_IMAGE
     )
-    candidates = _candidate_pattern_sizes(width, height)
+    estimated_size = estimate_checkerboard_size(gray)
+    candidates = _candidate_pattern_sizes(width, height, estimated_size)
     best: tuple[tuple[int, int], NDArray[np.float64]] | None = None
+    started_at = time.monotonic()
+    search_timeout_seconds = 4.0
 
     # Probe the most likely sizes with both methods first.  This avoids a slow
     # exhaustive pass for the common case while retaining a full fallback.
@@ -153,9 +224,13 @@ def detect_partial_checkerboard(
             found, corners = cv2.findChessboardCornersSB(gray, size, flags_sb)
         if found and corners is not None:
             return size, corners.reshape(-1, 2).astype(np.float64)
+        if time.monotonic() - started_at >= search_timeout_seconds:
+            break
 
     # The classic detector cheaply narrows remaining complete-grid cases.
     for size in candidates[priority_count:]:
+        if time.monotonic() - started_at >= search_timeout_seconds:
+            break
         found, corners = cv2.findChessboardCorners(gray, size, flags_fast)
         if not found or corners is None:
             continue
@@ -169,6 +244,8 @@ def detect_partial_checkerboard(
         # SB is more tolerant of blur, perspective and local occlusion.  Try
         # the most plausible dimensions first, then the full set if needed.
         for size in candidates[priority_count:]:
+            if time.monotonic() - started_at >= search_timeout_seconds:
+                break
             found, corners = cv2.findChessboardCornersSB(gray, size, flags_sb)
             if not found or corners is None:
                 continue

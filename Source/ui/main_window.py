@@ -6,7 +6,7 @@ from datetime import datetime
 from pathlib import Path
 
 import numpy as np
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QObject, QThread, Qt, Signal, Slot
 from PySide6.QtGui import QAction, QColor, QImage, QPixmap
 from PySide6.QtWidgets import (
     QFileDialog,
@@ -55,6 +55,18 @@ from ui.distortion_result_dialog import DistortionResultDialog
 from ui.slanted_edge_curve_dialog import SlantedEdgeCurveDialog
 
 
+class _DistortionWorker(QObject):
+    finished = Signal(object)
+
+    def __init__(self, image: np.ndarray) -> None:
+        super().__init__()
+        self._image = image
+
+    @Slot()
+    def run(self) -> None:
+        self.finished.emit(analyze_checkerboard(self._image))
+
+
 class MainWindow(QMainWindow):
     """파일 입력 기반 광학 성능 측정 프로그램의 초기 화면."""
 
@@ -72,6 +84,8 @@ class MainWindow(QMainWindow):
         self._ri_contour_dialog: RiContourDialog | None = None
         self._distortion_result_dialog: DistortionResultDialog | None = None
         self._slanted_edge_curve_dialog: SlantedEdgeCurveDialog | None = None
+        self._distortion_thread: QThread | None = None
+        self._distortion_worker: _DistortionWorker | None = None
 
         self.setWindowTitle("SS Optical Performance Tool")
         self.resize(1280, 900)
@@ -127,8 +141,8 @@ class MainWindow(QMainWindow):
         auto_button.clicked.connect(self._auto_contrast)
         optical_button = QPushButton("광학 설정")
         optical_button.clicked.connect(self._open_optical_settings)
-        analyze_all_button = QPushButton("전체 ROI 검사")
-        analyze_all_button.clicked.connect(self._analyze_all_rois)
+        self.analyze_all_button = QPushButton("전체 ROI 검사")
+        self.analyze_all_button.clicked.connect(self._analyze_all_rois)
         self.measurement_mode_combo = QComboBox()
         self.measurement_mode_combo.addItems(["Slanted Edge", "USAF 차트", "RI"])
         self.measurement_mode_combo.addItem("Distortion")
@@ -142,7 +156,7 @@ class MainWindow(QMainWindow):
         toolbar.addWidget(actual_button)
         toolbar.addWidget(auto_button)
         toolbar.addWidget(optical_button)
-        toolbar.addWidget(analyze_all_button)
+        toolbar.addWidget(self.analyze_all_button)
         toolbar.addWidget(QLabel("측정 모드"))
         toolbar.addWidget(self.measurement_mode_combo)
         toolbar.addStretch(1)
@@ -706,8 +720,27 @@ class MainWindow(QMainWindow):
 
     def _analyze_distortion(self) -> None:
         assert self._frame is not None
+        if self._distortion_thread is not None:
+            self.statusBar().showMessage("Distortion 분석이 이미 진행 중입니다.")
+            return
         self.statusBar().showMessage("Distortion: 체커보드 자동 검출 중...")
-        result = analyze_checkerboard(self._frame.image)
+        self.analyze_all_button.setEnabled(False)
+        self._distortion_thread = QThread(self)
+        self._distortion_worker = _DistortionWorker(
+            np.array(self._frame.image, copy=True)
+        )
+        self._distortion_worker.moveToThread(self._distortion_thread)
+        self._distortion_thread.started.connect(self._distortion_worker.run)
+        self._distortion_worker.finished.connect(self._show_distortion_result)
+        self._distortion_worker.finished.connect(self._distortion_thread.quit)
+        self._distortion_worker.finished.connect(self._distortion_worker.deleteLater)
+        self._distortion_thread.finished.connect(
+            self._distortion_analysis_finished
+        )
+        self._distortion_thread.start()
+
+    @Slot(object)
+    def _show_distortion_result(self, result) -> None:
         limit = self.distortion_limit_spin.value()
         self.analysis_panel.show_distortion_result(result, limit)
         if self._distortion_result_dialog is not None:
@@ -740,6 +773,14 @@ class MainWindow(QMainWindow):
                 f"{result.distortion_type} | 기준 ≤ {limit:.2f}%"
             )
         self.statusBar().showMessage(f"Distortion {judgment} | {value}")
+
+    @Slot()
+    def _distortion_analysis_finished(self) -> None:
+        if self._distortion_thread is not None:
+            self._distortion_thread.deleteLater()
+        self._distortion_thread = None
+        self._distortion_worker = None
+        self.analyze_all_button.setEnabled(True)
 
     def _analyze_ri(self) -> None:
         assert self._frame is not None

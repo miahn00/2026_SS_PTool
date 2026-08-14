@@ -1,0 +1,32 @@
+{
+  "resolution": [
+    640,
+    512
+  ],
+  "pixel_pitch_um": 15,
+  "sensor_size_mm": [
+    9.6,
+    7.68
+  ],
+  "sensor_nyquist_lp_per_mm": 33.333333333333336,
+  "0.5X_object_FOV_mm": [
+    19.2,
+    15.36
+  ],
+  "1.0X_object_FOV_mm": [
+    9.6,
+    7.68
+  ],
+  "distortion_pattern": {
+    "cell_px": 32,
+    "dark": 64,
+    "light": 192,
+    "grid": 0,
+    "grid_width_px": 1
+  },
+  "distortion_model": "xd=xu*(1+k1*r^2+k2*r^4), yd=yu*(1+k1*r^2+k2*r^4)",
+  "formats": {
+    "PNG": "8-bit grayscale lossless",
+    "TIFF": "8-bit grayscale uncompressed"
+  }
+}

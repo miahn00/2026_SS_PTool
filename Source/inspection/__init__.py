@@ -33,6 +33,7 @@ from .distortion import (
     DistortionMeasurementResult,
     analyze_checkerboard,
     detect_partial_checkerboard,
+    estimate_checkerboard_size,
     measure_grid_distortion,
 )
 from .mtf_batch import BatchMtfResult, RoiMtfResult, measure_rois_mtf
@@ -81,6 +82,7 @@ __all__ = [
     "measure_grid_distortion",
     "analyze_checkerboard",
     "detect_partial_checkerboard",
+    "estimate_checkerboard_size",
     "measure_relative_illumination",
     "generate_ri_grid_rois",
     "evaluate_minimum_ri",
