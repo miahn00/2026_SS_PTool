@@ -22,7 +22,7 @@ def test_main_window_starts_without_image(tmp_path) -> None:
 
     assert window._frame is None
     assert not window.viewer.has_image
-    assert window.windowTitle() == "SS Optical Performance Tool"
+    assert window.windowTitle() == "SS Optical Performance Tool V0.0.1"
     assert window.analysis_panel.result_table.height() >= 128
     assert window.measurement_mode_combo.currentText() == "Slanted Edge"
     assert not hasattr(window, "roi_x_spin")

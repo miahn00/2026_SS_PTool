@@ -18,6 +18,7 @@ htmlcov/
 build/
 dist/
 *.egg-info/
+*.spec
 
 # IDE and editor-local files
 .vscode/

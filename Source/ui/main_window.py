@@ -6,6 +6,7 @@ from datetime import datetime
 from pathlib import Path
 
 import numpy as np
+from app_version import APP_VERSION_TEXT
 from PySide6.QtCore import QObject, QThread, Qt, Signal, Slot
 from PySide6.QtGui import QAction, QColor, QImage, QPixmap
 from PySide6.QtWidgets import (
@@ -87,7 +88,9 @@ class MainWindow(QMainWindow):
         self._distortion_thread: QThread | None = None
         self._distortion_worker: _DistortionWorker | None = None
 
-        self.setWindowTitle("SS Optical Performance Tool")
+        self.setWindowTitle(
+            f"SS Optical Performance Tool {APP_VERSION_TEXT}"
+        )
         self.resize(1280, 900)
         self._build_menu()
         self._build_content()

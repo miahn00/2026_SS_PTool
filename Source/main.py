@@ -8,6 +8,7 @@ import sys
 from pathlib import Path
 
 import numpy as np
+from app_version import APP_VERSION
 
 from imaging import ImageLoadError, load_image, to_display_uint8
 
@@ -45,6 +46,8 @@ def run_gui() -> int:
     from ui import MainWindow
 
     app = QApplication(sys.argv)
+    app.setApplicationName("SS Optical Performance Tool")
+    app.setApplicationVersion(APP_VERSION)
     window = MainWindow()
     window.show()
     return app.exec()
