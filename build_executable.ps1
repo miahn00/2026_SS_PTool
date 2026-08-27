@@ -12,7 +12,7 @@ if (-not (Test-Path -LiteralPath $PythonExe)) {
     --clean `
     --windowed `
     --onedir `
-    --name "SS_PTool_V0.0.1" `
+    --name "SS_PTool_V0.0.2" `
     --paths (Join-Path $ProjectRoot "Source") `
     --collect-all matplotlib `
     --collect-all pyqtgraph `
@@ -24,4 +24,4 @@ if ($LASTEXITCODE -ne 0) {
     throw "실행파일 빌드에 실패했습니다. Exit code: $LASTEXITCODE"
 }
 
-Write-Host "빌드 완료: $ProjectRoot\dist\SS_PTool_V0.0.1\SS_PTool_V0.0.1.exe"
+Write-Host "빌드 완료: $ProjectRoot\dist\SS_PTool_V0.0.2\SS_PTool_V0.0.2.exe"

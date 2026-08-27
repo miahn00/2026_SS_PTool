@@ -8,6 +8,7 @@ import pytest
 
 from inspection.slanted_edge import (
     _quality_assessment,
+    calculate_lsf_derivative_correction,
     calculate_slanted_edge_mtf_curve,
     measure_slanted_edge,
     sample_mtf_curve_at_1_lpmm,
@@ -52,7 +53,17 @@ def test_curve_is_sampled_at_integer_lpmm_without_extrapolation() -> None:
     assert mtf[0] == 100.0
     assert np.all(np.diff(frequency) == 1.0)
     assert frequency[-1] <= curve.frequency_range_lpmm[1]
-    assert np.all((mtf >= 0) & (mtf <= 100))
+    assert np.all(np.isfinite(mtf))
+    assert np.all(mtf >= 0)
+
+
+def test_lsf_derivative_correction_matches_dc_and_nyquist() -> None:
+    correction = calculate_lsf_derivative_correction(
+        np.array([0.0, 0.5]), sample_spacing_pixel=0.25
+    )
+
+    assert correction[0] == pytest.approx(1.0)
+    assert correction[1] == pytest.approx(1.1107207345)
 
 
 def test_slanted_edge_returns_mtf_at_reference_and_pass() -> None:

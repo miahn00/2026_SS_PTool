@@ -73,8 +73,10 @@ class MtfCurve:
             raise ValueError("MTF 곡선에 측정점이 없습니다.")
         if np.any(frequency <= 0) or np.any(np.diff(frequency) <= 0):
             raise ValueError("MTF 주파수는 양수이며 오름차순이어야 합니다.")
-        if np.any((mtf < 0) | (mtf > 100)):
-            raise ValueError("MTF 값은 0~100% 범위여야 합니다.")
+        if not np.all(np.isfinite(mtf)):
+            raise ValueError("MTF 값은 유한한 수치여야 합니다.")
+        if np.any(mtf < 0):
+            raise ValueError("MTF 값은 0% 이상이어야 합니다.")
         object.__setattr__(self, "frequency_lpmm", frequency)
         object.__setattr__(self, "mtf_percent", mtf)
 
@@ -255,8 +257,8 @@ def interpolate_mtf_at_frequency(
 
 def evaluate_mtf(measured_mtf_percent: float, target_mtf_percent: float) -> str:
     """기준 주파수 MTF만으로 PASS/FAIL을 판정한다."""
-    if not 0 <= measured_mtf_percent <= 100:
-        raise ValueError("측정 MTF는 0~100% 범위여야 합니다.")
+    if not math.isfinite(measured_mtf_percent) or measured_mtf_percent < 0:
+        raise ValueError("측정 MTF는 유한한 0% 이상 값이어야 합니다.")
     if not 0 <= target_mtf_percent <= 100:
         raise ValueError("목표 MTF는 0~100% 범위여야 합니다.")
     return "PASS" if measured_mtf_percent >= target_mtf_percent else "FAIL"

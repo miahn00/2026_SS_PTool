@@ -40,6 +40,31 @@ class SlantedEdgeResult:
     quality_message: str
     curve: MtfCurve | None
     evaluation: MtfCurveEvaluationResult | None
+    lsf_derivative_correction_applied: bool = True
+    linearization_method: str = "NONE"
+    verification_gamma: float = 1.0
+
+
+def calculate_lsf_derivative_correction(
+    sensor_frequency_cycles_per_pixel: float | NDArray[np.generic],
+    sample_spacing_pixel: float,
+) -> float | NDArray[np.float64]:
+    """Return the ISO-style central-difference LSF correction factor."""
+    if sample_spacing_pixel <= 0:
+        raise ValueError("LSF sample spacing은 0보다 커야 합니다.")
+    frequency = np.asarray(
+        sensor_frequency_cycles_per_pixel, dtype=np.float64
+    )
+    if np.any(~np.isfinite(frequency)) or np.any(frequency < 0):
+        raise ValueError("LSF 보정 주파수는 유한한 0 이상의 값이어야 합니다.")
+    argument = 2.0 * np.pi * frequency * sample_spacing_pixel
+    denominator = np.sin(argument)
+    correction = np.ones_like(argument)
+    valid = np.abs(denominator) > np.finfo(float).eps
+    correction[valid] = argument[valid] / denominator[valid]
+    correction[~valid & (argument > 0)] = 10.0
+    correction = np.minimum(correction, 10.0)
+    return float(correction) if correction.ndim == 0 else correction
 
 
 def sample_mtf_curve_at_1_lpmm(
@@ -301,7 +326,10 @@ def calculate_slanted_edge_mtf_curve(
     sensor_frequency = np.fft.rfftfreq(lsf.size, d=sample_spacing)
     valid = (sensor_frequency > 0) & (sensor_frequency <= 0.5)
     sensor_frequency = sensor_frequency[valid]
-    mtf = np.clip(mtf[valid], 0, 100)
+    mtf = mtf[valid]
+    mtf *= calculate_lsf_derivative_correction(
+        sensor_frequency, sample_spacing
+    )
     if sensor_frequency.size < 2:
         raise ValueError("Sensor Nyquist 범위의 MTF 측정점이 부족합니다.")
 

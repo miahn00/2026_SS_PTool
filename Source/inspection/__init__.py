@@ -40,6 +40,7 @@ from .mtf_batch import BatchMtfResult, RoiMtfResult, measure_rois_mtf
 from .slanted_edge import (
     SlantedEdgeResult,
     calculate_slanted_edge_mtf_curve,
+    calculate_lsf_derivative_correction,
     measure_slanted_edge,
     sample_mtf_curve_at_1_lpmm,
 )
@@ -89,6 +90,7 @@ __all__ = [
     "measure_grid_relative_illumination",
     "measure_rois_mtf",
     "calculate_slanted_edge_mtf_curve",
+    "calculate_lsf_derivative_correction",
     "measure_slanted_edge",
     "sample_mtf_curve_at_1_lpmm",
     "measure_rois_slanted_edge",

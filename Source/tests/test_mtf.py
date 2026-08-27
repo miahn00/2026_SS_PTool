@@ -113,6 +113,17 @@ def test_usaf_log_frequency_interpolation_example() -> None:
 def test_evaluate_mtf_uses_only_target_value() -> None:
     assert evaluate_mtf(34.5, 30.0) == "PASS"
     assert evaluate_mtf(24.2, 30.0) == "FAIL"
+    assert evaluate_mtf(108.0, 30.0) == "PASS"
+
+
+def test_mtf_curve_preserves_sharpening_overshoot() -> None:
+    curve = MtfCurve(
+        np.array([1.0, 2.0, 3.0]),
+        np.array([104.0, 108.0, 83.0]),
+        "SHARPENED_EDGE",
+    )
+
+    assert curve.mtf_percent.max() == pytest.approx(108.0)
 
 
 def test_single_bar_matching_reference_can_pass() -> None:

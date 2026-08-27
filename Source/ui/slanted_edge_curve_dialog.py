@@ -68,6 +68,7 @@ class SlantedEdgeCurveDialog(QDialog):
         axes = self.figure.add_subplot(111)
         colors = ("#1565c0", "#2e7d32", "#ef6c00", "#8e24aa")
         maximum_frequency = 0.0
+        maximum_mtf = 100.0
         curve_count = 0
         for index, item in enumerate(result.roi_results):
             curve = item.result.curve
@@ -92,6 +93,7 @@ class SlantedEdgeCurveDialog(QDialog):
                 label=f"{item.roi_name} (1 lp/mm)",
             )
             maximum_frequency = max(maximum_frequency, curve.frequency_range_lpmm[1])
+            maximum_mtf = max(maximum_mtf, float(curve.mtf_percent.max()))
             curve_count += 1
 
         axes.axvline(
@@ -109,7 +111,7 @@ class SlantedEdgeCurveDialog(QDialog):
             label=f"목표 MTF {target_mtf_percent:.2f}%",
         )
         axes.set_xlim(0, max(1.0, maximum_frequency))
-        axes.set_ylim(0, 105)
+        axes.set_ylim(0, max(105.0, maximum_mtf * 1.05))
         axes.set_xlabel("Object-side spatial frequency (lp/mm)")
         axes.set_ylabel("MTF (%)")
         axes.set_title("Slanted Edge MTF Curves (1 lp/mm interpolated points)")
@@ -124,6 +126,8 @@ class SlantedEdgeCurveDialog(QDialog):
             f"평가 주파수: {reference_frequency_lpmm:.2f} lp/mm    "
             f"목표 MTF: {target_mtf_percent:.2f}%    "
             f"전체 판정: {result.overall_status}\n"
+            "LSF derivative correction: ON    "
+            "Linearization: None (Verification Gamma = 1.0)\n"
             f"표시 곡선: {curve_count}개    "
             "원형 마커: 측정 범위 안의 1 lp/mm 선형 보간값"
         )

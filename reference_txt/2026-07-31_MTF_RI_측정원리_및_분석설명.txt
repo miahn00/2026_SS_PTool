@@ -603,3 +603,13 @@ Slanted Edge 포화 표시 정책 변경
 - 합성 검증 이미지처럼 흑백 영역이 데이터 최소/최대값인 경우에도 "포화 픽셀이 많습니다"를 품질 경고 사유로 표시하지 않는다.
 - 포화율 계산값과 결과표의 참고 수치는 유지한다.
 - Edge 직선 적합도, 대비, ESF sampling, subpixel phase 및 복수 Edge 검증은 기존대로 유지한다.
+
+V0.0.2 Slanted Edge 검증 조건 및 계산 변경
+- LSF derivative correction을 기본 ON으로 적용한다.
+- np.gradient 중앙차분의 주파수 응답 저하를 sensor frequency와 ESF sample spacing으로 보정한다.
+- Verification mode는 Linearization=None, Gamma=1.0으로 정의한다.
+- Slanted Edge MTF의 100% 상한 clipping을 제거한다.
+- Sharpening 또는 ringing 영상의 100% 초과 MTF를 계산과 그래프에 그대로 표시한다.
+- MTF 값은 유한하고 0 이상이어야 하지만 100%를 초과할 수 있다.
+- 그래프 Y축은 전체 ROI의 실제 최대 MTF에 맞춰 자동 확장한다.
+- USAF의 CTF 및 CTF-to-MTF 변환 방식에는 LSF correction을 적용하지 않는다.

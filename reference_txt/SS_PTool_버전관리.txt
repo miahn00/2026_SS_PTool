@@ -8,6 +8,29 @@ SS Optical Performance Tool 버전 관리
 - 프로그램 제목 표시줄과 실행파일 빌드는 Source/app_version.py 값을 사용한다.
 
 ======================================================================
+V0.0.2
+수정일: 2026-08-27
+상태: Slanted Edge 상용 프로그램 교차검증 개선 버전
+
+주요 변경
+- ISO 12233:2014 계열 LSF derivative correction 기본 적용
+- np.gradient 중앙차분의 고주파 attenuation 보정
+- Slanted Edge MTF 100% 상한 clipping 제거
+- MtfCurve에서 sharpening/ringing에 의한 100% 초과값 허용
+- MTF 판정 함수에서 100% 초과 측정값 허용
+- MTF 그래프 Y축을 실제 최대값에 따라 자동 확장
+- Verification linearization 조건을 None, Gamma 1.0으로 명시
+- 결과 화면과 Slanted Edge 곡선 팝업에 LSF/Gamma 조건 표시
+- Golden PNG 및 상용 프로그램 비교 시 Imatest 설정을
+  No linearization 또는 Input Gamma=1로 사용
+
+측정 결과 영향
+- V0.0.1보다 MTF50 및 고주파 MTF가 상승할 수 있다.
+- Nyquist에 가까울수록 LSF correction 영향이 커진다.
+- V0.0.1과 V0.0.2 결과를 동일 알고리즘 결과로 혼용하지 않는다.
+======================================================================
+
+======================================================================
 V0.0.1
 수정일: 2026-08-14
 상태: 초기 검증용 개발 버전
