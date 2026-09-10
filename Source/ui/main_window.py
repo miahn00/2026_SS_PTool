@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
     QPlainTextEdit,
     QPushButton,
     QComboBox,
+    QCheckBox,
     QDoubleSpinBox,
     QDockWidget,
     QSpinBox,
@@ -216,6 +217,17 @@ class MainWindow(QMainWindow):
         self.global_mtf_spin.setRange(0, 100)
         self.global_mtf_spin.setDecimals(2)
         self.global_mtf_spin.setValue(self._optical_settings.target_mtf_percent)
+        self.slanted_edge_v002_checkbox = QCheckBox(
+            "V0.0.2 LSF 보정 적용"
+        )
+        self.slanted_edge_v002_checkbox.setChecked(True)
+        self.slanted_edge_v002_checkbox.setToolTip(
+            "ON: V0.0.2 LSF 미분 보정 및 100% 초과값 유지\n"
+            "OFF: V0.0.1 호환 계산(LSF 보정 없음, 100% 상한 적용)"
+        )
+        self.slanted_edge_v002_checkbox.toggled.connect(
+            self._slanted_edge_method_changed
+        )
         self.global_frequency_tolerance_spin = QDoubleSpinBox()
         self.global_frequency_tolerance_spin.setRange(0, 100)
         self.global_frequency_tolerance_spin.setDecimals(2)
@@ -249,6 +261,7 @@ class MainWindow(QMainWindow):
         global_form = QFormLayout()
         global_form.addRow("평가 주파수 lp/mm", self.global_lp_spin)
         global_form.addRow("목표 MTF @ 평가주파수 %", self.global_mtf_spin)
+        global_form.addRow("Slanted Edge 계산", self.slanted_edge_v002_checkbox)
         global_form.addRow(
             "패턴 주파수 검증 허용오차 %",
             self.global_frequency_tolerance_spin,
@@ -678,6 +691,13 @@ class MainWindow(QMainWindow):
     def _is_slanted_edge_mode(self) -> bool:
         return self.measurement_mode_combo.currentText() == "Slanted Edge"
 
+    def _slanted_edge_method_changed(self, checked: bool) -> None:
+        self.viewer.clear_measurement_results()
+        if hasattr(self, "analysis_panel"):
+            self.analysis_panel.clear_batch_result()
+        mode = "V0.0.2" if checked else "V0.0.1 호환"
+        self.statusBar().showMessage(f"Slanted Edge 계산 방식: {mode}")
+
     def _is_ri_mode(self) -> bool:
         return self.measurement_mode_combo.currentText() == "RI"
 
@@ -706,6 +726,9 @@ class MainWindow(QMainWindow):
         mtf_mode = not (ri_mode or distortion_mode)
         self.global_form.setRowVisible(self.global_lp_spin, mtf_mode)
         self.global_form.setRowVisible(self.global_mtf_spin, mtf_mode)
+        self.global_form.setRowVisible(
+            self.slanted_edge_v002_checkbox, slanted_edge
+        )
         self.global_form.setRowVisible(
             self.global_frequency_tolerance_spin,
             not slanted_edge and mtf_mode,
@@ -869,6 +892,9 @@ class MainWindow(QMainWindow):
             self._optical_settings.magnification,
             self.global_lp_spin.value(),
             self.global_mtf_spin.value(),
+            apply_lsf_derivative_correction=(
+                self.slanted_edge_v002_checkbox.isChecked()
+            ),
         )
         self.analysis_panel.show_slanted_edge_result(result)
         evaluation = result.evaluation
@@ -898,6 +924,9 @@ class MainWindow(QMainWindow):
             magnification=self._optical_settings.magnification,
             reference_frequency_lpmm=self.global_lp_spin.value(),
             target_mtf_percent=self.global_mtf_spin.value(),
+            apply_lsf_derivative_correction=(
+                self.slanted_edge_v002_checkbox.isChecked()
+            ),
         )
         self.analysis_panel.show_slanted_edge_batch_result(
             result,

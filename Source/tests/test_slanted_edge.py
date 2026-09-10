@@ -66,6 +66,37 @@ def test_lsf_derivative_correction_matches_dc_and_nyquist() -> None:
     assert correction[1] == pytest.approx(1.1107207345)
 
 
+def test_v001_compatibility_disables_correction_and_clips_to_100() -> None:
+    corrected, *_ = calculate_slanted_edge_mtf_curve(
+        _slanted_edge(0.5), 10, 10, 1
+    )
+    legacy, *_ = calculate_slanted_edge_mtf_curve(
+        _slanted_edge(0.5),
+        10,
+        10,
+        1,
+        apply_lsf_derivative_correction=False,
+    )
+
+    assert np.array_equal(corrected.frequency_lpmm, legacy.frequency_lpmm)
+    assert np.all(legacy.mtf_percent <= 100)
+    assert corrected.mtf_percent[-1] > legacy.mtf_percent[-1]
+
+
+def test_measurement_result_records_selected_calculation_method() -> None:
+    result = measure_slanted_edge(
+        _slanted_edge(1.2),
+        10,
+        10,
+        1,
+        15,
+        20,
+        apply_lsf_derivative_correction=False,
+    )
+
+    assert not result.lsf_derivative_correction_applied
+
+
 def test_slanted_edge_returns_mtf_at_reference_and_pass() -> None:
     result = measure_slanted_edge(
         _slanted_edge(1.2),

@@ -126,7 +126,7 @@ class SlantedEdgeCurveDialog(QDialog):
             f"평가 주파수: {reference_frequency_lpmm:.2f} lp/mm    "
             f"목표 MTF: {target_mtf_percent:.2f}%    "
             f"전체 판정: {result.overall_status}\n"
-            "LSF derivative correction: ON    "
+            f"계산 방식: {'V0.0.2 (LSF correction ON)' if result.lsf_derivative_correction_applied else 'V0.0.1 호환 (LSF correction OFF, 100% clipping)'}    "
             "Linearization: None (Verification Gamma = 1.0)\n"
             f"표시 곡선: {curve_count}개    "
             "원형 마커: 측정 범위 안의 1 lp/mm 선형 보간값"

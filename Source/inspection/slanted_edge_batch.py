@@ -25,6 +25,7 @@ class BatchSlantedEdgeResult:
     overall_status: str
     message: str
     roi_results: tuple[RoiSlantedEdgeResult, ...]
+    lsf_derivative_correction_applied: bool = True
 
 
 def measure_rois_slanted_edge(
@@ -36,6 +37,7 @@ def measure_rois_slanted_edge(
     magnification: float,
     reference_frequency_lpmm: float,
     target_mtf_percent: float,
+    apply_lsf_derivative_correction: bool = True,
 ) -> BatchSlantedEdgeResult:
     results: list[RoiSlantedEdgeResult] = []
     for roi in sorted(rois, key=lambda value: value.number):
@@ -57,6 +59,7 @@ def measure_rois_slanted_edge(
                 "비활성화된 ROI입니다.",
                 None,
                 None,
+                lsf_derivative_correction_applied=apply_lsf_derivative_correction,
             )
         else:
             result = measure_slanted_edge(
@@ -66,6 +69,7 @@ def measure_rois_slanted_edge(
                 magnification,
                 reference_frequency_lpmm,
                 target_mtf_percent,
+                apply_lsf_derivative_correction=apply_lsf_derivative_correction,
             )
         results.append(
             RoiSlantedEdgeResult(
@@ -87,4 +91,9 @@ def measure_rois_slanted_edge(
         status, message = "FAIL", "목표 MTF에 미달한 ROI가 있습니다."
     else:
         status, message = "PASS", "판정 포함 ROI가 모두 목표 MTF를 만족합니다."
-    return BatchSlantedEdgeResult(status, message, tuple(results))
+    return BatchSlantedEdgeResult(
+        status,
+        message,
+        tuple(results),
+        apply_lsf_derivative_correction,
+    )

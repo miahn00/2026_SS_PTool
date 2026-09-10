@@ -287,6 +287,7 @@ def calculate_slanted_edge_mtf_curve(
     magnification: float,
     *,
     oversampling: int = 4,
+    apply_lsf_derivative_correction: bool = True,
 ) -> tuple[MtfCurve, str, float, float, float]:
     """ROI에서 object-side lp/mm MTF 곡선과 Edge 품질 정보를 반환한다."""
     if roi_image.shape[0] < 32 or roi_image.shape[1] < 32:
@@ -327,9 +328,13 @@ def calculate_slanted_edge_mtf_curve(
     valid = (sensor_frequency > 0) & (sensor_frequency <= 0.5)
     sensor_frequency = sensor_frequency[valid]
     mtf = mtf[valid]
-    mtf *= calculate_lsf_derivative_correction(
-        sensor_frequency, sample_spacing
-    )
+    if apply_lsf_derivative_correction:
+        mtf *= calculate_lsf_derivative_correction(
+            sensor_frequency, sample_spacing
+        )
+    else:
+        # V0.0.1 compatibility: no derivative correction and a 100% ceiling.
+        mtf = np.clip(mtf, 0, 100)
     if sensor_frequency.size < 2:
         raise ValueError("Sensor Nyquist 범위의 MTF 측정점이 부족합니다.")
 
@@ -356,6 +361,8 @@ def measure_slanted_edge(
     magnification: float,
     reference_frequency_lpmm: float,
     target_mtf_percent: float,
+    *,
+    apply_lsf_derivative_correction: bool = True,
 ) -> SlantedEdgeResult:
     """Slanted Edge MTF 곡선을 계산하고 평가 주파수에서 판정한다."""
     try:
@@ -389,6 +396,7 @@ def measure_slanted_edge(
                 message,
                 None,
                 None,
+                lsf_derivative_correction_applied=apply_lsf_derivative_correction,
             )
         curve, orientation, angle, r_squared, contrast = (
             calculate_slanted_edge_mtf_curve(
@@ -396,6 +404,7 @@ def measure_slanted_edge(
                 pixel_pitch_x_um,
                 pixel_pitch_y_um,
                 magnification,
+                apply_lsf_derivative_correction=apply_lsf_derivative_correction,
             )
         )
         pixel_pitch = (
@@ -444,6 +453,7 @@ def measure_slanted_edge(
                 quality_message,
                 curve,
                 evaluation,
+                lsf_derivative_correction_applied=apply_lsf_derivative_correction,
             )
     except ValueError as exc:
         return SlantedEdgeResult(
@@ -463,6 +473,7 @@ def measure_slanted_edge(
             str(exc),
             None,
             None,
+            lsf_derivative_correction_applied=apply_lsf_derivative_correction,
         )
     return SlantedEdgeResult(
         evaluation.status,
@@ -481,4 +492,5 @@ def measure_slanted_edge(
         quality_message,
         curve,
         evaluation,
+        lsf_derivative_correction_applied=apply_lsf_derivative_correction,
     )

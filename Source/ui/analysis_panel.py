@@ -308,13 +308,18 @@ class AnalysisPanel(QWidget):
             if evaluation
             else "-"
         )
+        calculation_mode = (
+            "V0.0.2 (LSF correction ON)"
+            if result.lsf_derivative_correction_applied
+            else "V0.0.1 호환 (LSF correction OFF, 100% clipping)"
+        )
         self.result_label.setText(
             f"Slanted Edge | 방향: {result.edge_orientation} | "
             f"기울기: {result.edge_angle_degrees:.2f}° | "
             f"직선 적합도 R²: {result.edge_fit_r_squared:.3f} | "
             f"대비: {result.contrast_percent:.2f}% | "
             f"측정 품질: {result.quality_grade} | "
-            "LSF correction: ON | Linearization: None (Gamma 1.0)"
+            f"계산 방식: {calculation_mode} | Linearization: None (Gamma 1.0)"
         )
         self.mtf_result_label.setStyleSheet(
             f"QLabel {{ font-size: 13px; font-weight: bold; padding: 6px; "
@@ -431,7 +436,8 @@ class AnalysisPanel(QWidget):
         self.mtf_result_label.setText(
             f"평가 주파수: {reference_frequency_lpmm:.2f} lp/mm | "
             f"목표 MTF: {target_mtf_percent:.2f}% | Slanted Edge 직접 MTF"
-            " | LSF correction: ON | Linearization: None (Gamma 1.0)"
+            f" | 계산 방식: {'V0.0.2 (LSF correction ON)' if result.lsf_derivative_correction_applied else 'V0.0.1 호환 (LSF correction OFF, 100% clipping)'}"
+            " | Linearization: None (Gamma 1.0)"
         )
         self.profile_plot.setVisible(False)
         self.fft_plot.setVisible(False)

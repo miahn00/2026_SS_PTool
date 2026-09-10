@@ -22,9 +22,11 @@ def test_main_window_starts_without_image(tmp_path) -> None:
 
     assert window._frame is None
     assert not window.viewer.has_image
-    assert window.windowTitle() == "SS Optical Performance Tool V0.0.2"
+    assert window.windowTitle() == "SS Optical Performance Tool V0.0.3"
     assert window.analysis_panel.result_table.height() >= 128
     assert window.measurement_mode_combo.currentText() == "Slanted Edge"
+    assert window.slanted_edge_v002_checkbox.isChecked()
+    assert not window.slanted_edge_v002_checkbox.isHidden()
     assert not hasattr(window, "roi_x_spin")
     assert not hasattr(window, "roi_width_spin")
     assert not hasattr(window, "roi_name_edit")
@@ -51,6 +53,7 @@ def test_ri_mode_hides_mtf_controls_and_disables_manual_rois(tmp_path) -> None:
     assert window.global_lp_spin.isHidden()
     assert window.global_mtf_spin.isHidden()
     assert window.global_frequency_tolerance_spin.isHidden()
+    assert window.slanted_edge_v002_checkbox.isHidden()
     assert not window.ri_minimum_spin.isHidden()
     assert window.distortion_limit_spin.isHidden()
     assert window.roi_count_label.isHidden()
@@ -59,6 +62,7 @@ def test_ri_mode_hides_mtf_controls_and_disables_manual_rois(tmp_path) -> None:
 
     window.measurement_mode_combo.setCurrentText("Slanted Edge")
     assert not window.global_lp_spin.isHidden()
+    assert not window.slanted_edge_v002_checkbox.isHidden()
     assert window.ri_minimum_spin.isHidden()
     assert window.viewer._roi_drawing_enabled
     window.close()
