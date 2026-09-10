@@ -19,6 +19,8 @@ build/
 dist/
 *.egg-info/
 *.spec
+CameraBridge/bin/
+CameraBridge/obj/
 
 # IDE and editor-local files
 .vscode/

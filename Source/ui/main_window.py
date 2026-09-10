@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+from concurrent.futures import Future, ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
 
 import numpy as np
 from app_version import APP_VERSION_TEXT
-from PySide6.QtCore import QObject, QThread, Qt, Signal, Slot
+from PySide6.QtCore import QObject, QThread, QTimer, Qt, Signal, Slot
 from PySide6.QtGui import QAction, QColor, QImage, QPixmap
 from PySide6.QtWidgets import (
     QFileDialog,
@@ -36,6 +37,8 @@ from imaging import (
     to_display_uint8,
     window_to_uint8,
 )
+from camera import CameraConnectionSettings, CameraLinkClient
+from camera.camera_link_client import default_cam_file
 from imaging.roi import RoiData, load_rois, save_rois
 from inspection import (
     MtfMeasurementSettings,
@@ -50,6 +53,7 @@ from inspection import (
 )
 from models import OpticalSettings, load_optical_settings, save_optical_settings
 from ui.analysis_panel import AnalysisPanel
+from ui.camera_connection_dialog import CameraConnectionDialog
 from ui.image_viewer import ImageViewer
 from ui.optical_settings_dialog import OpticalSettingsDialog
 from ui.ri_contour_dialog import RiContourDialog
@@ -67,6 +71,11 @@ class _DistortionWorker(QObject):
     @Slot()
     def run(self) -> None:
         self.finished.emit(analyze_checkerboard(self._image))
+
+
+class _LiveAnalysisSignals(QObject):
+    finished = Signal(object)
+    failed = Signal(str)
 
 
 class MainWindow(QMainWindow):
@@ -88,6 +97,23 @@ class MainWindow(QMainWindow):
         self._slanted_edge_curve_dialog: SlantedEdgeCurveDialog | None = None
         self._distortion_thread: QThread | None = None
         self._distortion_worker: _DistortionWorker | None = None
+        self._camera_client = CameraLinkClient(self)
+        self._camera_client.connected.connect(self._camera_connected)
+        self._camera_client.connectionFailed.connect(self._camera_error)
+        self._camera_client.disconnected.connect(self._camera_disconnected)
+        self._camera_client.frameReady.connect(self._camera_frame_received)
+        self._camera_settings = CameraConnectionSettings(default_cam_file())
+        self._latest_live_image: np.ndarray | None = None
+        self._latest_live_frame_number = 0
+        self._live_display_frozen = False
+        self._live_roi_inspection = False
+        self._live_analysis_future: Future | None = None
+        self._live_executor = ThreadPoolExecutor(max_workers=1)
+        self._live_signals = _LiveAnalysisSignals(self)
+        self._live_signals.finished.connect(self._show_live_roi_values)
+        self._live_signals.failed.connect(self._show_live_roi_error)
+        self._live_analysis_timer = QTimer(self)
+        self._live_analysis_timer.timeout.connect(self._schedule_live_roi_analysis)
 
         self.setWindowTitle(
             f"SS Optical Performance Tool {APP_VERSION_TEXT}"
@@ -136,6 +162,11 @@ class MainWindow(QMainWindow):
     def _build_content(self) -> None:
         open_button = QPushButton("영상 파일 열기")
         open_button.clicked.connect(self.open_image)
+        self.live_connect_button = QPushButton("실시간 연결")
+        self.live_connect_button.clicked.connect(self._toggle_live_connection)
+        self.live_resume_button = QPushButton("실시간 화면 재개")
+        self.live_resume_button.clicked.connect(self._resume_live_display)
+        self.live_resume_button.setVisible(False)
 
         fit_button = QPushButton("화면 맞춤")
         fit_button.clicked.connect(self._fit_image)
@@ -156,6 +187,8 @@ class MainWindow(QMainWindow):
 
         toolbar = QHBoxLayout()
         toolbar.addWidget(open_button)
+        toolbar.addWidget(self.live_connect_button)
+        toolbar.addWidget(self.live_resume_button)
         toolbar.addWidget(fit_button)
         toolbar.addWidget(actual_button)
         toolbar.addWidget(auto_button)
@@ -315,6 +348,13 @@ class MainWindow(QMainWindow):
         self.addDockWidget(Qt.DockWidgetArea.BottomDockWidgetArea, dock)
 
     def open_image(self) -> None:
+        if self._camera_client.is_connected:
+            QMessageBox.information(
+                self,
+                "영상 파일 열기",
+                "실시간 연결을 해제한 후 영상 파일을 열어 주세요.",
+            )
+            return
         file_path, _ = QFileDialog.getOpenFileName(
             self,
             "영상 파일 열기",
@@ -338,6 +378,105 @@ class MainWindow(QMainWindow):
         self._set_pixmap(pixmap)
         self._update_info(frame)
         self.statusBar().showMessage(f"열기 완료: {Path(file_path).name}")
+
+    def _toggle_live_connection(self) -> None:
+        if self._camera_client.is_connected:
+            self._stop_live_roi_inspection()
+            self._camera_client.disconnect_camera()
+            return
+        dialog = CameraConnectionDialog(self._camera_settings, self)
+        if not dialog.exec():
+            return
+        self._camera_settings = dialog.settings()
+        self.live_connect_button.setEnabled(False)
+        self.statusBar().showMessage("Camera Link 연결 중...")
+        try:
+            self._camera_client.connect_camera(self._camera_settings)
+        except (OSError, RuntimeError, ValueError) as exc:
+            self.live_connect_button.setEnabled(True)
+            QMessageBox.critical(self, "실시간 연결 오류", str(exc))
+
+    @Slot(str)
+    def _camera_connected(self, message: str) -> None:
+        self.live_connect_button.setEnabled(True)
+        self.live_connect_button.setText("실시간 연결 해제")
+        self.statusBar().showMessage(f"Camera Link 연결 완료 | {message}".rstrip(" |"))
+
+    @Slot(str)
+    def _camera_error(self, message: str) -> None:
+        self.live_connect_button.setEnabled(True)
+        QMessageBox.critical(self, "Camera Link 오류", message)
+        self.statusBar().showMessage(f"Camera Link 오류: {message}")
+
+    @Slot()
+    def _camera_disconnected(self) -> None:
+        self._stop_live_roi_inspection()
+        self.live_connect_button.setEnabled(True)
+        self.live_connect_button.setText("실시간 연결")
+        self.live_resume_button.setVisible(False)
+        self._latest_live_image = None
+        self._live_display_frozen = False
+
+    @Slot(object, int, float, str)
+    def _camera_frame_received(
+        self, image: np.ndarray, frame_number: int, fps: float, channel_state: str
+    ) -> None:
+        self._latest_live_image = image
+        self._latest_live_frame_number = frame_number
+        if not self._live_display_frozen:
+            first_camera_frame = self._frame is None or self._frame.source_type != "camera"
+            self._set_live_frame(image, frame_number, fps, channel_state, first_camera_frame)
+        if not self._live_display_frozen:
+            self.statusBar().showMessage(
+                f"Camera Link {channel_state} | {fps:.1f} FPS | Frame {frame_number}"
+            )
+
+    def _set_live_frame(
+        self,
+        image: np.ndarray,
+        frame_number: int,
+        fps: float,
+        channel_state: str,
+        reset_view: bool,
+    ) -> None:
+        self._frame = ImageFrame(
+            image=np.array(image, copy=True),
+            width=image.shape[1],
+            height=image.shape[0],
+            bit_depth=image.dtype.itemsize * 8,
+            channels=1,
+            source_type="camera",
+            timestamp=datetime.now(),
+            frame_number=frame_number,
+            metadata={"fps": fps, "channel_state": channel_state},
+        )
+        if reset_view:
+            self._set_window_controls(self._frame)
+            display = to_display_uint8(self._frame.image)
+        else:
+            minimum = self.minimum_spin.value()
+            maximum = self.maximum_spin.value()
+            display = (
+                window_to_uint8(self._frame.image, minimum, maximum)
+                if maximum > minimum
+                else to_display_uint8(self._frame.image)
+            )
+        self._set_pixmap(self._make_pixmap(display), reset_view=reset_view)
+        if reset_view:
+            self._update_info(self._frame)
+
+    def _resume_live_display(self) -> None:
+        self._live_display_frozen = False
+        self.live_resume_button.setVisible(False)
+        if self._latest_live_image is not None:
+            self._set_live_frame(
+                self._latest_live_image,
+                self._latest_live_frame_number,
+                0.0,
+                "ACTIVE",
+                False,
+            )
+        self.statusBar().showMessage("실시간 화면을 재개했습니다.")
 
     @staticmethod
     def _make_pixmap(image: np.ndarray) -> QPixmap:
@@ -640,15 +779,23 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "전체 ROI 검사", "먼저 영상 파일을 열어 주세요.")
             return
         if self._is_distortion_mode():
+            self._freeze_latest_live_frame()
             self._analyze_distortion()
             return
         if self._is_ri_mode():
+            self._freeze_latest_live_frame()
             self._analyze_ri()
             return
         rois = self.viewer.roi_data()
         if not rois:
             QMessageBox.information(self, "전체 ROI 검사", "검사할 ROI가 없습니다.")
             return
+        if self._camera_client.is_connected:
+            if not self._live_roi_inspection:
+                self._start_live_roi_inspection()
+                return
+            self._stop_live_roi_inspection()
+            self._freeze_latest_live_frame()
         if self._is_slanted_edge_mode():
             self._analyze_all_slanted_edge(rois)
             return
@@ -688,6 +835,117 @@ class MainWindow(QMainWindow):
             f"전체 ROI 검사: {result.overall_status} - {result.message}"
         )
 
+    def _start_live_roi_inspection(self) -> None:
+        self._live_display_frozen = False
+        self.live_resume_button.setVisible(False)
+        self._live_roi_inspection = True
+        self.analyze_all_button.setText("실시간 ROI 검사 종료 및 결과 확정")
+        self.analysis_panel.clear_batch_result()
+        self._live_analysis_timer.start(self._camera_settings.inspection_interval_ms)
+        self._schedule_live_roi_analysis()
+
+    def _stop_live_roi_inspection(self) -> None:
+        self._live_roi_inspection = False
+        self._live_analysis_timer.stop()
+        if hasattr(self, "analyze_all_button"):
+            self.analyze_all_button.setText("전체 ROI 검사")
+
+    def _freeze_latest_live_frame(self) -> None:
+        if not self._camera_client.is_connected or self._latest_live_image is None:
+            return
+        self._live_display_frozen = True
+        self.live_resume_button.setVisible(True)
+        self._set_live_frame(
+            self._latest_live_image,
+            self._latest_live_frame_number,
+            0.0,
+            "ACTIVE",
+            False,
+        )
+
+    def _schedule_live_roi_analysis(self) -> None:
+        if not self._live_roi_inspection or self._latest_live_image is None:
+            return
+        if self._live_analysis_future is not None and not self._live_analysis_future.done():
+            return
+        image = np.array(self._latest_live_image, copy=True)
+        rois = self.viewer.roi_data()
+        if not rois:
+            return
+        mode = self.measurement_mode_combo.currentText()
+        settings = {
+            "reference": self.global_lp_spin.value(),
+            "target": self.global_mtf_spin.value(),
+            "pitch_x": self._optical_settings.pixel_pitch_x_um,
+            "pitch_y": self._optical_settings.pixel_pitch_y_um,
+            "magnification": self._optical_settings.magnification,
+            "tolerance": self.global_frequency_tolerance_spin.value(),
+            "lsf": self.slanted_edge_v002_checkbox.isChecked(),
+        }
+        future = self._live_executor.submit(
+            self._calculate_live_roi_values, image, rois, mode, settings
+        )
+        self._live_analysis_future = future
+        future.add_done_callback(self._live_analysis_completed)
+
+    @staticmethod
+    def _calculate_live_roi_values(image, rois, mode, settings):
+        if mode == "Slanted Edge":
+            return measure_rois_slanted_edge(
+                image,
+                rois,
+                pixel_pitch_x_um=settings["pitch_x"],
+                pixel_pitch_y_um=settings["pitch_y"],
+                magnification=settings["magnification"],
+                reference_frequency_lpmm=settings["reference"],
+                target_mtf_percent=settings["target"],
+                apply_lsf_derivative_correction=settings["lsf"],
+            )
+        return measure_rois_mtf(
+            image,
+            rois,
+            reference_frequency_lpmm=settings["reference"],
+            target_mtf_percent=settings["target"],
+            pixel_pitch_x_um=settings["pitch_x"],
+            pixel_pitch_y_um=settings["pitch_y"],
+            magnification=settings["magnification"],
+            pattern_frequency_tolerance_percent=settings["tolerance"],
+        )
+
+    def _live_analysis_completed(self, future: Future) -> None:
+        try:
+            result = future.result()
+        except Exception as exc:
+            self._live_signals.failed.emit(str(exc))
+        else:
+            self._live_signals.finished.emit(result)
+
+    @Slot(object)
+    def _show_live_roi_values(self, result) -> None:
+        if not self._live_roi_inspection:
+            return
+        for item in result.roi_results:
+            if hasattr(item, "result"):
+                evaluation = item.result.evaluation
+                value = (
+                    evaluation.mtf_at_reference_frequency_percent
+                    if evaluation else None
+                )
+                roi_number = item.roi_number
+            else:
+                measurement = item.measurement
+                value = (
+                    measurement.mtf_at_reference_frequency_percent
+                    if measurement else None
+                )
+                roi_number = item.roi_number
+            text = f"MTF {value:.1f}%" if value is not None else "MTF -"
+            self.viewer.set_roi_measurement_result(roi_number, "MEASURED", text)
+
+    @Slot(str)
+    def _show_live_roi_error(self, message: str) -> None:
+        self.statusBar().showMessage(f"실시간 ROI 검사 오류: {message}")
+
     def _is_slanted_edge_mode(self) -> bool:
         return self.measurement_mode_combo.currentText() == "Slanted Edge"
 
@@ -705,6 +963,7 @@ class MainWindow(QMainWindow):
         return self.measurement_mode_combo.currentText() == "Distortion"
 
     def _measurement_mode_changed(self, *_args) -> None:
+        self._stop_live_roi_inspection()
         slanted_edge = self._is_slanted_edge_mode()
         ri_mode = self._is_ri_mode()
         distortion_mode = self._is_distortion_mode()
@@ -968,8 +1227,13 @@ class MainWindow(QMainWindow):
         )
 
     def _update_info(self, frame: ImageFrame) -> None:
+        source = (
+            "Camera Link 실시간 입력"
+            if frame.source_type == "camera"
+            else str(frame.source_path)
+        )
         lines = [
-            f"파일: {frame.source_path}",
+            f"입력: {source}",
             f"해상도: {frame.width} × {frame.height}",
             f"Bit depth: {frame.bit_depth}",
             f"채널: {frame.channels}",
@@ -982,3 +1246,9 @@ class MainWindow(QMainWindow):
         if compression:
             lines.append(f"압축 방식: {compression}")
         self.info_view.setPlainText("\n".join(lines))
+
+    def closeEvent(self, event) -> None:  # noqa: N802 - Qt API
+        self._stop_live_roi_inspection()
+        self._camera_client.close()
+        self._live_executor.shutdown(wait=False, cancel_futures=True)
+        super().closeEvent(event)

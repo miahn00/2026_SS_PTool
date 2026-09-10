@@ -12,6 +12,8 @@ import pytest
 import numpy as np
 
 from imaging.roi import RoiData
+from camera import CameraConnectionSettings
+from camera.camera_link_client import default_cam_file
 from ui import MainWindow
 
 
@@ -22,7 +24,7 @@ def test_main_window_starts_without_image(tmp_path) -> None:
 
     assert window._frame is None
     assert not window.viewer.has_image
-    assert window.windowTitle() == "SS Optical Performance Tool V0.0.3"
+    assert window.windowTitle() == "SS Optical Performance Tool V0.1.4"
     assert window.analysis_panel.result_table.height() >= 128
     assert window.measurement_mode_combo.currentText() == "Slanted Edge"
     assert window.slanted_edge_v002_checkbox.isChecked()
@@ -39,6 +41,23 @@ def test_main_window_starts_without_image(tmp_path) -> None:
     )
     assert settings_path.exists()
 
+    window.close()
+    app.processEvents()
+
+
+def test_live_roi_inspection_uses_selected_interval(tmp_path) -> None:
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow(tmp_path / "optical_settings.json")
+    window._camera_settings = CameraConnectionSettings(
+        default_cam_file(), inspection_interval_ms=1000
+    )
+
+    window._start_live_roi_inspection()
+
+    assert window._live_roi_inspection
+    assert window._live_analysis_timer.interval() == 1000
+    assert window.analyze_all_button.text() == "실시간 ROI 검사 종료 및 결과 확정"
+    window._stop_live_roi_inspection()
     window.close()
     app.processEvents()
 
