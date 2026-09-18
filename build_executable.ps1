@@ -15,13 +15,16 @@ $DotnetExe = if ($env:SS_PTOOL_DOTNET) {
 } else {
     (Get-Command dotnet -ErrorAction SilentlyContinue).Source
 }
-if (-not $DotnetExe -or -not (& $DotnetExe --list-sdks)) {
-    throw ".NET 8 SDK를 찾을 수 없습니다. SDK 설치 후 SS_PTOOL_DOTNET에 dotnet.exe 경로를 지정할 수 있습니다."
-}
-
-& $DotnetExe build $BridgeProject -c Release
-if ($LASTEXITCODE -ne 0) {
-    throw "CameraBridge 빌드에 실패했습니다. Exit code: $LASTEXITCODE"
+$ExistingBridge = Join-Path $BridgeOutput "CameraBridge.exe"
+if ($DotnetExe -and (& $DotnetExe --list-sdks)) {
+    & $DotnetExe build $BridgeProject -c Release
+    if ($LASTEXITCODE -ne 0) {
+        throw "CameraBridge 빌드에 실패했습니다. Exit code: $LASTEXITCODE"
+    }
+} elseif (Test-Path -LiteralPath $ExistingBridge) {
+    Write-Warning ".NET 8 SDK가 없어 기존 CameraBridge Release 산출물을 사용합니다: $ExistingBridge"
+} else {
+    throw ".NET 8 SDK와 기존 CameraBridge Release 실행파일을 모두 찾을 수 없습니다."
 }
 
 & $PythonExe -m PyInstaller `
@@ -29,7 +32,7 @@ if ($LASTEXITCODE -ne 0) {
     --clean `
     --windowed `
     --onedir `
-    --name "SS_PTool_V0.1.4" `
+    --name "SS_PTool_V0.1.5" `
     --paths (Join-Path $ProjectRoot "Source") `
     --collect-all matplotlib `
     --collect-all pyqtgraph `
@@ -43,4 +46,4 @@ if ($LASTEXITCODE -ne 0) {
     throw "실행파일 빌드에 실패했습니다. Exit code: $LASTEXITCODE"
 }
 
-Write-Host "빌드 완료: $ProjectRoot\dist\SS_PTool_V0.1.4\SS_PTool_V0.1.4.exe"
+Write-Host "빌드 완료: $ProjectRoot\dist\SS_PTool_V0.1.5\SS_PTool_V0.1.5.exe"

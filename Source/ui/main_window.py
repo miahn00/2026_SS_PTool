@@ -37,6 +37,11 @@ from imaging import (
     to_display_uint8,
     window_to_uint8,
 )
+from imaging.measurement_archive import (
+    load_measurement_manifest,
+    render_result_overlay,
+    save_measurement_archive,
+)
 from camera import CameraConnectionSettings, CameraLinkClient
 from camera.camera_link_client import default_cam_file
 from imaging.roi import RoiData, load_rois, save_rois
@@ -63,6 +68,7 @@ from ui.slanted_edge_curve_dialog import SlantedEdgeCurveDialog
 
 class _DistortionWorker(QObject):
     finished = Signal(object)
+    failed = Signal(str)
 
     def __init__(self, image: np.ndarray) -> None:
         super().__init__()
@@ -70,7 +76,12 @@ class _DistortionWorker(QObject):
 
     @Slot()
     def run(self) -> None:
-        self.finished.emit(analyze_checkerboard(self._image))
+        try:
+            result = analyze_checkerboard(self._image)
+        except Exception as exc:
+            self.failed.emit(str(exc))
+        else:
+            self.finished.emit(result)
 
 
 class _LiveAnalysisSignals(QObject):
@@ -97,6 +108,8 @@ class MainWindow(QMainWindow):
         self._slanted_edge_curve_dialog: SlantedEdgeCurveDialog | None = None
         self._distortion_thread: QThread | None = None
         self._distortion_worker: _DistortionWorker | None = None
+        self._distortion_analysis_image: np.ndarray | None = None
+        self._distortion_analysis_frame_number = 0
         self._camera_client = CameraLinkClient(self)
         self._camera_client.connected.connect(self._camera_connected)
         self._camera_client.connectionFailed.connect(self._camera_error)
@@ -108,12 +121,17 @@ class MainWindow(QMainWindow):
         self._live_display_frozen = False
         self._live_roi_inspection = False
         self._live_analysis_future: Future | None = None
+        self._live_pass_streak = 0
+        self._live_auto_finalized = False
         self._live_executor = ThreadPoolExecutor(max_workers=1)
         self._live_signals = _LiveAnalysisSignals(self)
         self._live_signals.finished.connect(self._show_live_roi_values)
         self._live_signals.failed.connect(self._show_live_roi_error)
         self._live_analysis_timer = QTimer(self)
         self._live_analysis_timer.timeout.connect(self._schedule_live_roi_analysis)
+        self._measurement_archive_root = (
+            self._optical_settings_path.parent / "measurement_results"
+        )
 
         self.setWindowTitle(
             f"SS Optical Performance Tool {APP_VERSION_TEXT}"
@@ -154,6 +172,10 @@ class MainWindow(QMainWindow):
         open_action.triggered.connect(self.open_image)
         file_menu.addAction(open_action)
 
+        load_measurement_action = QAction("측정 데이터 불러오기...", self)
+        load_measurement_action.triggered.connect(self.open_measurement_data)
+        file_menu.addAction(load_measurement_action)
+
         exit_action = QAction("종료", self)
         exit_action.triggered.connect(self.close)
         file_menu.addSeparator()
@@ -184,6 +206,14 @@ class MainWindow(QMainWindow):
         self.measurement_mode_combo.currentIndexChanged.connect(
             self._measurement_mode_changed
         )
+        self.live_auto_result_checkbox = QCheckBox(
+            "전체 ROI PASS 시 자동 결과 표시"
+        )
+        self.live_auto_result_checkbox.setChecked(False)
+        self.live_auto_result_checkbox.setToolTip(
+            "Slanted Edge 실시간 검사에서 전체 ROI가 2회 연속 PASS하면 "
+            "해당 프레임을 고정하고 결과를 자동 확정합니다."
+        )
 
         toolbar = QHBoxLayout()
         toolbar.addWidget(open_button)
@@ -196,6 +226,7 @@ class MainWindow(QMainWindow):
         toolbar.addWidget(self.analyze_all_button)
         toolbar.addWidget(QLabel("측정 모드"))
         toolbar.addWidget(self.measurement_mode_combo)
+        toolbar.addWidget(self.live_auto_result_checkbox)
         toolbar.addStretch(1)
 
         self.viewer = ImageViewer()
@@ -378,6 +409,139 @@ class MainWindow(QMainWindow):
         self._set_pixmap(pixmap)
         self._update_info(frame)
         self.statusBar().showMessage(f"열기 완료: {Path(file_path).name}")
+
+    def open_measurement_data(self) -> None:
+        """Restore an archived source image and its reproducibility settings."""
+        if self._camera_client.is_connected:
+            QMessageBox.information(
+                self,
+                "측정 데이터 불러오기",
+                "실시간 연결을 해제한 후 측정 데이터를 불러와 주세요.",
+            )
+            return
+        file_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "측정 데이터 불러오기",
+            str(self._measurement_archive_root),
+            "측정 데이터 (measurement.json);;JSON (*.json)",
+        )
+        if not file_path:
+            return
+        try:
+            payload, image_path = load_measurement_manifest(file_path)
+            frame = load_image(image_path)
+            display = to_display_uint8(frame.image)
+            mode = str(payload.get("measurement_mode", "Slanted Edge"))
+            if self.measurement_mode_combo.findText(mode) < 0:
+                raise ValueError(f"지원하지 않는 측정 모드입니다: {mode}")
+            settings = payload.get("settings", {})
+            if not isinstance(settings, dict):
+                raise ValueError("저장된 측정 설정 형식이 올바르지 않습니다.")
+            rois = [RoiData.from_dict(value) for value in payload.get("rois", [])]
+            for roi in rois:
+                roi.validate(frame.width, frame.height)
+        except (ImageLoadError, OSError, TypeError, ValueError) as exc:
+            QMessageBox.critical(self, "측정 데이터 불러오기 오류", str(exc))
+            return
+
+        self._frame = frame
+        self._set_window_controls(frame)
+        self._set_pixmap(self._make_pixmap(display))
+        self._update_info(frame)
+        self.measurement_mode_combo.setCurrentText(mode)
+        for key in ("pixel_pitch_x_um", "pixel_pitch_y_um", "magnification"):
+            if key in settings:
+                setattr(self._optical_settings, key, float(settings[key]))
+        if "evaluation_frequency_lpmm" in settings:
+            self.global_lp_spin.setValue(float(settings["evaluation_frequency_lpmm"]))
+        if "target_mtf_percent" in settings:
+            self.global_mtf_spin.setValue(float(settings["target_mtf_percent"]))
+        if "pattern_frequency_tolerance_percent" in settings:
+            self.global_frequency_tolerance_spin.setValue(
+                float(settings["pattern_frequency_tolerance_percent"])
+            )
+        if "ri_minimum_percent" in settings:
+            self.ri_minimum_spin.setValue(float(settings["ri_minimum_percent"]))
+        if "distortion_limit_percent" in settings:
+            self.distortion_limit_spin.setValue(
+                float(settings["distortion_limit_percent"])
+            )
+        if "lsf_derivative_correction" in settings:
+            self.slanted_edge_v002_checkbox.setChecked(
+                bool(settings["lsf_derivative_correction"])
+            )
+        if rois and mode not in {"RI", "Distortion"}:
+            self.viewer.replace_rois(rois)
+        self.statusBar().showMessage(
+            f"측정 데이터 불러오기 완료: {payload.get('measurement_id', Path(file_path).parent.name)}"
+        )
+
+    def _measurement_settings(self, algorithm_version: str) -> dict:
+        return {
+            "algorithm_version": algorithm_version,
+            "pixel_pitch_x_um": self._optical_settings.pixel_pitch_x_um,
+            "pixel_pitch_y_um": self._optical_settings.pixel_pitch_y_um,
+            "magnification": self._optical_settings.magnification,
+            "evaluation_frequency_lpmm": self.global_lp_spin.value(),
+            "target_mtf_percent": self.global_mtf_spin.value(),
+            "pattern_frequency_tolerance_percent": (
+                self.global_frequency_tolerance_spin.value()
+            ),
+            "ri_minimum_percent": self.ri_minimum_spin.value(),
+            "distortion_limit_percent": self.distortion_limit_spin.value(),
+            "lsf_derivative_correction": (
+                self.slanted_edge_v002_checkbox.isChecked()
+            ),
+            "ri_grid_rows": 25,
+            "ri_grid_columns": 33,
+            "ri_inner_fraction": 0.5,
+            "distortion_model": "5th order radial with decentering",
+        }
+
+    def _save_measurement(
+        self,
+        *,
+        mode: str,
+        image: np.ndarray,
+        result_image: np.ndarray,
+        result,
+        algorithm_version: str,
+        rois: list[RoiData] | None = None,
+        frame_number: int | None = None,
+    ) -> Path | None:
+        source_type = (
+            "camera"
+            if self._frame and getattr(self._frame, "source_type", "file") == "camera"
+            else "file"
+        )
+        source_path = getattr(self._frame, "source_path", None)
+        actual_frame_number = (
+            int(frame_number)
+            if frame_number is not None
+            else int(getattr(self._frame, "frame_number", 0))
+        )
+        try:
+            archive = save_measurement_archive(
+                self._measurement_archive_root,
+                mode=mode,
+                image=image,
+                result_image=result_image,
+                result=result,
+                settings=self._measurement_settings(algorithm_version),
+                rois=rois,
+                frame_number=actual_frame_number,
+                source_type=source_type,
+                source_filename=Path(source_path).name if source_path else "",
+            )
+        except (OSError, TypeError, ValueError) as exc:
+            QMessageBox.warning(
+                self,
+                "측정 데이터 저장 오류",
+                f"측정 결과는 표시하지만 데이터를 저장하지 못했습니다.\n{exc}",
+            )
+            return None
+        self.statusBar().showMessage(f"측정 데이터 저장 완료: {archive}")
+        return archive
 
     def _toggle_live_connection(self) -> None:
         if self._camera_client.is_connected:
@@ -839,6 +1003,8 @@ class MainWindow(QMainWindow):
         self._live_display_frozen = False
         self.live_resume_button.setVisible(False)
         self._live_roi_inspection = True
+        self._live_pass_streak = 0
+        self._live_auto_finalized = False
         self.analyze_all_button.setText("실시간 ROI 검사 종료 및 결과 확정")
         self.analysis_panel.clear_batch_result()
         self._live_analysis_timer.start(self._camera_settings.inspection_interval_ms)
@@ -869,6 +1035,7 @@ class MainWindow(QMainWindow):
         if self._live_analysis_future is not None and not self._live_analysis_future.done():
             return
         image = np.array(self._latest_live_image, copy=True)
+        frame_number = self._latest_live_frame_number
         rois = self.viewer.roi_data()
         if not rois:
             return
@@ -883,15 +1050,20 @@ class MainWindow(QMainWindow):
             "lsf": self.slanted_edge_v002_checkbox.isChecked(),
         }
         future = self._live_executor.submit(
-            self._calculate_live_roi_values, image, rois, mode, settings
+            self._calculate_live_roi_values,
+            image,
+            rois,
+            mode,
+            settings,
+            frame_number,
         )
         self._live_analysis_future = future
         future.add_done_callback(self._live_analysis_completed)
 
     @staticmethod
-    def _calculate_live_roi_values(image, rois, mode, settings):
+    def _calculate_live_roi_values(image, rois, mode, settings, frame_number=0):
         if mode == "Slanted Edge":
-            return measure_rois_slanted_edge(
+            result = measure_rois_slanted_edge(
                 image,
                 rois,
                 pixel_pitch_x_um=settings["pitch_x"],
@@ -901,16 +1073,24 @@ class MainWindow(QMainWindow):
                 target_mtf_percent=settings["target"],
                 apply_lsf_derivative_correction=settings["lsf"],
             )
-        return measure_rois_mtf(
-            image,
-            rois,
-            reference_frequency_lpmm=settings["reference"],
-            target_mtf_percent=settings["target"],
-            pixel_pitch_x_um=settings["pitch_x"],
-            pixel_pitch_y_um=settings["pitch_y"],
-            magnification=settings["magnification"],
-            pattern_frequency_tolerance_percent=settings["tolerance"],
-        )
+        else:
+            result = measure_rois_mtf(
+                image,
+                rois,
+                reference_frequency_lpmm=settings["reference"],
+                target_mtf_percent=settings["target"],
+                pixel_pitch_x_um=settings["pitch_x"],
+                pixel_pitch_y_um=settings["pitch_y"],
+                magnification=settings["magnification"],
+                pattern_frequency_tolerance_percent=settings["tolerance"],
+            )
+        return {
+            "result": result,
+            "image": image,
+            "rois": rois,
+            "mode": mode,
+            "frame_number": frame_number,
+        }
 
     def _live_analysis_completed(self, future: Future) -> None:
         try:
@@ -921,9 +1101,10 @@ class MainWindow(QMainWindow):
             self._live_signals.finished.emit(result)
 
     @Slot(object)
-    def _show_live_roi_values(self, result) -> None:
+    def _show_live_roi_values(self, outcome) -> None:
         if not self._live_roi_inspection:
             return
+        result = outcome["result"] if isinstance(outcome, dict) else outcome
         for item in result.roi_results:
             if hasattr(item, "result"):
                 evaluation = item.result.evaluation
@@ -940,7 +1121,43 @@ class MainWindow(QMainWindow):
                 )
                 roi_number = item.roi_number
             text = f"MTF {value:.1f}%" if value is not None else "MTF -"
-            self.viewer.set_roi_measurement_result(roi_number, "MEASURED", text)
+            item_status = item.result.status if hasattr(item, "result") else item.status
+            self.viewer.set_roi_measurement_result(roi_number, item_status, text)
+
+        if not (
+            isinstance(outcome, dict)
+            and outcome.get("mode") == "Slanted Edge"
+            and self.live_auto_result_checkbox.isChecked()
+            and not self._live_auto_finalized
+        ):
+            return
+        if result.overall_status == "PASS":
+            self._live_pass_streak += 1
+        else:
+            self._live_pass_streak = 0
+        if self._live_pass_streak < 2:
+            self.statusBar().showMessage(
+                f"전체 ROI PASS 확인 {self._live_pass_streak}/2"
+            )
+            return
+
+        self._live_auto_finalized = True
+        self._stop_live_roi_inspection()
+        self._live_display_frozen = True
+        self.live_resume_button.setVisible(True)
+        self._set_live_frame(
+            outcome["image"],
+            outcome["frame_number"],
+            0.0,
+            "ACTIVE",
+            False,
+        )
+        self._present_slanted_edge_result(
+            result,
+            outcome["rois"],
+            outcome["image"],
+            outcome["frame_number"],
+        )
 
     @Slot(str)
     def _show_live_roi_error(self, message: str) -> None:
@@ -983,6 +1200,7 @@ class MainWindow(QMainWindow):
         ri_mode = self._is_ri_mode()
         distortion_mode = self._is_distortion_mode()
         mtf_mode = not (ri_mode or distortion_mode)
+        self.live_auto_result_checkbox.setVisible(slanted_edge)
         self.global_form.setRowVisible(self.global_lp_spin, mtf_mode)
         self.global_form.setRowVisible(self.global_mtf_spin, mtf_mode)
         self.global_form.setRowVisible(
@@ -1010,15 +1228,22 @@ class MainWindow(QMainWindow):
             return
         self.statusBar().showMessage("Distortion: 체커보드 자동 검출 중...")
         self.analyze_all_button.setEnabled(False)
+        self._distortion_analysis_image = np.array(self._frame.image, copy=True)
+        self._distortion_analysis_frame_number = int(
+            getattr(self._frame, "frame_number", 0)
+        )
         self._distortion_thread = QThread(self)
         self._distortion_worker = _DistortionWorker(
-            np.array(self._frame.image, copy=True)
+            self._distortion_analysis_image
         )
         self._distortion_worker.moveToThread(self._distortion_thread)
         self._distortion_thread.started.connect(self._distortion_worker.run)
         self._distortion_worker.finished.connect(self._show_distortion_result)
         self._distortion_worker.finished.connect(self._distortion_thread.quit)
         self._distortion_worker.finished.connect(self._distortion_worker.deleteLater)
+        self._distortion_worker.failed.connect(self._distortion_analysis_failed)
+        self._distortion_worker.failed.connect(self._distortion_thread.quit)
+        self._distortion_worker.failed.connect(self._distortion_worker.deleteLater)
         self._distortion_thread.finished.connect(
             self._distortion_analysis_finished
         )
@@ -1026,6 +1251,11 @@ class MainWindow(QMainWindow):
 
     @Slot(object)
     def _show_distortion_result(self, result) -> None:
+        image = (
+            self._distortion_analysis_image
+            if self._distortion_analysis_image is not None
+            else np.array(self._frame.image, copy=True)
+        )
         limit = self.distortion_limit_spin.value()
         self.analysis_panel.show_distortion_result(result, limit)
         if self._distortion_result_dialog is not None:
@@ -1034,7 +1264,7 @@ class MainWindow(QMainWindow):
         source_path = getattr(self._frame, "source_path", None)
         source_filename = Path(source_path).name if source_path else "-"
         self._distortion_result_dialog = DistortionResultDialog(
-            self._frame.image,
+            image,
             result,
             analyzed_at=analyzed_at,
             source_filename=source_filename,
@@ -1058,6 +1288,40 @@ class MainWindow(QMainWindow):
                 f"{result.distortion_type} | 기준 ≤ {limit:.2f}%"
             )
         self.statusBar().showMessage(f"Distortion {judgment} | {value}")
+        result_image = render_result_overlay(
+            image,
+            mode="Distortion",
+            status=judgment,
+            detected_points=result.detected_points,
+            fitted_points=result.fitted_points,
+            rejected_points=result.rejected_points,
+            center=result.distortion_center,
+        )
+        self._save_measurement(
+            mode="Distortion",
+            image=image,
+            result_image=result_image,
+            result={"measurement": result, "judgment": judgment},
+            algorithm_version="smia-tv-distortion-v1",
+            frame_number=self._distortion_analysis_frame_number,
+        )
+        if judgment == "INVALID":
+            QMessageBox.warning(
+                self,
+                "Distortion 분석 불가",
+                f"Frame: {self._distortion_analysis_frame_number}\n"
+                f"원인: {result.message}\n\n"
+                "체커보드 위치, 초점 및 영상 밝기를 확인해 주세요.",
+            )
+
+    @Slot(str)
+    def _distortion_analysis_failed(self, message: str) -> None:
+        QMessageBox.critical(
+            self,
+            "Distortion 분석 오류",
+            f"Distortion 분석 중 예상하지 못한 오류가 발생했습니다.\n{message}",
+        )
+        self.statusBar().showMessage(f"Distortion 분석 오류: {message}")
 
     @Slot()
     def _distortion_analysis_finished(self) -> None:
@@ -1065,13 +1329,15 @@ class MainWindow(QMainWindow):
             self._distortion_thread.deleteLater()
         self._distortion_thread = None
         self._distortion_worker = None
+        self._distortion_analysis_image = None
         self.analyze_all_button.setEnabled(True)
 
     def _analyze_ri(self) -> None:
         assert self._frame is not None
+        image = np.array(self._frame.image, copy=True)
         try:
             result = measure_grid_relative_illumination(
-                self._frame.image,
+                image,
                 rows=25,
                 columns=33,
                 inner_fraction=0.5,
@@ -1139,6 +1405,33 @@ class MainWindow(QMainWindow):
             f"C{result.minimum_position[1] + 1}) | "
             f"기준 {evaluation.minimum_required_percent:.2f}%"
         )
+        archive_cells = []
+        for roi, label, _color in grid_items:
+            row_text = label.split("\n", 1)[0]
+            row = int(row_text.split("C", 1)[0][1:]) - 1
+            column = int(row_text.split("C", 1)[1]) - 1
+            cell = cell_map[(row, column)]
+            level = (
+                "CENTER" if cell.region_type == "CENTER"
+                else "LOW" if cell.relative_percent < 70
+                else "MID" if cell.relative_percent < 85
+                else "OK"
+            )
+            archive_cells.append((roi, label.replace("\n", " "), level))
+        result_image = render_result_overlay(
+            image,
+            mode="RI",
+            status=evaluation.status,
+            ri_cells=archive_cells,
+        )
+        self._save_measurement(
+            mode="RI",
+            image=image,
+            result_image=result_image,
+            result={"measurement": result, "evaluation": evaluation},
+            algorithm_version="ri-grid-v1",
+            frame_number=int(getattr(self._frame, "frame_number", 0)),
+        )
 
     def _analyze_selected_slanted_edge(self, item) -> None:
         assert self._frame is not None
@@ -1175,8 +1468,9 @@ class MainWindow(QMainWindow):
 
     def _analyze_all_slanted_edge(self, rois: list[RoiData]) -> None:
         assert self._frame is not None
+        image = np.array(self._frame.image, copy=True)
         result = measure_rois_slanted_edge(
-            self._frame.image,
+            image,
             rois,
             pixel_pitch_x_um=self._optical_settings.pixel_pitch_x_um,
             pixel_pitch_y_um=self._optical_settings.pixel_pitch_y_um,
@@ -1187,6 +1481,20 @@ class MainWindow(QMainWindow):
                 self.slanted_edge_v002_checkbox.isChecked()
             ),
         )
+        self._present_slanted_edge_result(
+            result,
+            rois,
+            image,
+            int(getattr(self._frame, "frame_number", 0)),
+        )
+
+    def _present_slanted_edge_result(
+        self,
+        result,
+        rois: list[RoiData],
+        image: np.ndarray,
+        frame_number: int,
+    ) -> None:
         self.analysis_panel.show_slanted_edge_batch_result(
             result,
             self.global_lp_spin.value(),
@@ -1224,6 +1532,38 @@ class MainWindow(QMainWindow):
             )
         self.statusBar().showMessage(
             f"전체 Slanted Edge 검사: {result.overall_status} - {result.message}"
+        )
+        labels: dict[int, str] = {}
+        for item in result.roi_results:
+            evaluation = item.result.evaluation
+            value = (
+                evaluation.mtf_at_reference_frequency_percent
+                if evaluation is not None else None
+            )
+            labels[item.roi_number] = (
+                f"ROI {item.roi_number} {item.result.status} "
+                f"MTF {value:.1f}%" if value is not None
+                else f"ROI {item.roi_number} {item.result.status}"
+            )
+        result_image = render_result_overlay(
+            image,
+            mode="Slanted Edge",
+            status=result.overall_status,
+            rois=rois,
+            roi_labels=labels,
+        )
+        self._save_measurement(
+            mode="Slanted Edge",
+            image=image,
+            result_image=result_image,
+            result=result,
+            algorithm_version=(
+                "slanted-edge-v0.0.2"
+                if result.lsf_derivative_correction_applied
+                else "slanted-edge-v0.0.1-compatible"
+            ),
+            rois=rois,
+            frame_number=frame_number,
         )
 
     def _update_info(self, frame: ImageFrame) -> None:

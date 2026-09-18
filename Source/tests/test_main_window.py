@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from types import SimpleNamespace
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -24,7 +25,8 @@ def test_main_window_starts_without_image(tmp_path) -> None:
 
     assert window._frame is None
     assert not window.viewer.has_image
-    assert window.windowTitle() == "SS Optical Performance Tool V0.1.4"
+    assert window.windowTitle() == "SS Optical Performance Tool V0.1.5"
+    assert not window.live_auto_result_checkbox.isChecked()
     assert window.analysis_panel.result_table.height() >= 128
     assert window.measurement_mode_combo.currentText() == "Slanted Edge"
     assert window.slanted_edge_v002_checkbox.isChecked()
@@ -58,6 +60,47 @@ def test_live_roi_inspection_uses_selected_interval(tmp_path) -> None:
     assert window._live_analysis_timer.interval() == 1000
     assert window.analyze_all_button.text() == "실시간 ROI 검사 종료 및 결과 확정"
     window._stop_live_roi_inspection()
+    window.close()
+    app.processEvents()
+
+
+def test_live_slanted_edge_auto_finalizes_after_two_passes(
+    tmp_path, monkeypatch
+) -> None:
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow(tmp_path / "optical_settings.json")
+    window.live_auto_result_checkbox.setChecked(True)
+    window._live_roi_inspection = True
+    measurement = SimpleNamespace(mtf_at_reference_frequency_percent=42.0)
+    roi_result = SimpleNamespace(
+        roi_number=1,
+        result=SimpleNamespace(status="PASS", evaluation=measurement),
+    )
+    result = SimpleNamespace(overall_status="PASS", roi_results=(roi_result,))
+    outcome = {
+        "result": result,
+        "image": np.ones((32, 32), dtype=np.uint16),
+        "rois": [RoiData(1, "ROI 1", 0, 0, 32, 32)],
+        "mode": "Slanted Edge",
+        "frame_number": 77,
+    }
+    presented = []
+    monkeypatch.setattr(window, "_set_live_frame", lambda *_args: None)
+    monkeypatch.setattr(
+        window,
+        "_present_slanted_edge_result",
+        lambda *args: presented.append(args),
+    )
+
+    window._show_live_roi_values(outcome)
+    assert window._live_roi_inspection
+    assert window._live_pass_streak == 1
+    window._show_live_roi_values(outcome)
+
+    assert not window._live_roi_inspection
+    assert window._live_auto_finalized
+    assert len(presented) == 1
+    assert presented[0][3] == 77
     window.close()
     app.processEvents()
 
