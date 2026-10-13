@@ -72,7 +72,7 @@ class AnalysisPanel(QWidget):
         self.result_table.verticalHeader().setDefaultSectionSize(24)
         self.result_table.horizontalHeader().setFixedHeight(26)
         self.result_table.horizontalHeader().setStretchLastSection(True)
-        table_height = 26 + (24 * 4) + (self.result_table.frameWidth() * 2) + 6
+        table_height = 26 + (24 * 5) + (self.result_table.frameWidth() * 2) + 6
         self.result_table.setFixedHeight(table_height)
 
         content = QWidget()

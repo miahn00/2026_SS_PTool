@@ -53,14 +53,14 @@ def test_roi_rejects_out_of_bounds(tmp_path) -> None:
         load_rois(path, 640, 480)
 
 
-def test_roi_rejects_more_than_four(tmp_path) -> None:
+def test_roi_rejects_more_than_five(tmp_path) -> None:
     path = tmp_path / "rois.json"
     save_rois(
         path,
-        [RoiData(index, f"ROI {index}", 0, 0, 10, 10) for index in range(1, 6)],
+        [RoiData(index, f"ROI {index}", 0, 0, 10, 10) for index in range(1, 7)],
     )
 
-    with pytest.raises(ValueError, match="최대 4개"):
+    with pytest.raises(ValueError, match="최대 5개"):
         load_rois(path, 640, 480)
 
 

@@ -21,7 +21,7 @@ from PySide6.QtWidgets import (
     QGraphicsView,
 )
 
-from imaging.roi import RoiData, roi_from_points
+from imaging.roi import MAXIMUM_ROI_COUNT, RoiData, roi_from_points
 from ui.roi_item import RoiItem
 
 
@@ -48,6 +48,7 @@ class ImageViewer(QGraphicsView):
         self._roi_drawing_enabled = True
         self._draw_start: tuple[int, int] | None = None
         self._draw_preview: QGraphicsRectItem | None = None
+        self._automatic_minimum_roi_size: int | None = None
         self.setBackgroundBrush(Qt.GlobalColor.black)
         self.setDragMode(QGraphicsView.DragMode.ScrollHandDrag)
         self.setTransformationAnchor(QGraphicsView.ViewportAnchor.AnchorUnderMouse)
@@ -86,8 +87,10 @@ class ImageViewer(QGraphicsView):
         self.pixelHovered.emit(0, 0, False)
 
     def add_roi(self, data: RoiData) -> RoiItem:
-        if len(self._roi_items) >= 4:
-            raise ValueError("ROI는 최대 4개까지 생성할 수 있습니다.")
+        if len(self._roi_items) >= MAXIMUM_ROI_COUNT:
+            raise ValueError(
+                f"ROI는 최대 {MAXIMUM_ROI_COUNT}개까지 생성할 수 있습니다."
+            )
         data.validate(self._image_width, self._image_height)
         item = RoiItem(
             data,
@@ -95,6 +98,7 @@ class ImageViewer(QGraphicsView):
             self._image_height,
             self._roi_changed,
             self._roi_selected,
+            self._automatic_minimum_roi_size or RoiItem.DEFAULT_MINIMUM_SIZE,
         )
         self._scene.addItem(item)
         self._roi_items.append(item)
@@ -104,7 +108,42 @@ class ImageViewer(QGraphicsView):
 
     def _next_roi_number(self) -> int:
         used = {item.data.number for item in self._roi_items}
-        return next(number for number in range(1, 5) if number not in used)
+        return next(
+            number
+            for number in range(1, MAXIMUM_ROI_COUNT + 1)
+            if number not in used
+        )
+
+    def set_automatic_minimum_roi_size(self, size: int | None) -> None:
+        """Enable mode-specific minimum creation/resize size enforcement."""
+        self._automatic_minimum_roi_size = (
+            max(1, int(size)) if size is not None else None
+        )
+        minimum = self._automatic_minimum_roi_size or RoiItem.DEFAULT_MINIMUM_SIZE
+        for item in self._roi_items:
+            item.set_minimum_size(minimum)
+
+    def _drag_geometry(
+        self,
+        start: tuple[int, int],
+        end: tuple[int, int],
+    ) -> tuple[int, int, int, int]:
+        """Return bounded drag geometry, expanding to the active mode minimum."""
+        start_x, start_y = start
+        end_x, end_y = end
+        minimum = self._automatic_minimum_roi_size
+        width = abs(end_x - start_x) + 1
+        height = abs(end_y - start_y) + 1
+        if minimum is None:
+            return min(start_x, end_x), min(start_y, end_y), width, height
+
+        width = min(self._image_width, max(width, minimum))
+        height = min(self._image_height, max(height, minimum))
+        left = start_x if end_x >= start_x else start_x - width + 1
+        top = start_y if end_y >= start_y else start_y - height + 1
+        left = min(max(left, 0), self._image_width - width)
+        top = min(max(top, 0), self._image_height - height)
+        return left, top, width, height
 
     def selected_roi(self) -> RoiItem | None:
         selected = [item for item in self._roi_items if item.isSelected()]
@@ -249,11 +288,9 @@ class ImageViewer(QGraphicsView):
         else:
             self.pixelHovered.emit(position[0], position[1], True)
         if self._draw_start is not None and position is not None:
-            start_x, start_y = self._draw_start
-            left = min(start_x, position[0])
-            top = min(start_y, position[1])
-            width = abs(position[0] - start_x) + 1
-            height = abs(position[1] - start_y) + 1
+            left, top, width, height = self._drag_geometry(
+                self._draw_start, position
+            )
             if self._draw_preview is not None:
                 self._draw_preview.setRect(left, top, width, height)
             event.accept()
@@ -265,7 +302,7 @@ class ImageViewer(QGraphicsView):
             event.button() == Qt.MouseButton.LeftButton
             and self.has_image
             and self._roi_drawing_enabled
-            and len(self._roi_items) < 4
+            and len(self._roi_items) < MAXIMUM_ROI_COUNT
             and not self._roi_at(event.position().toPoint())
         ):
             position = self.image_position(event.position().toPoint())
@@ -293,16 +330,29 @@ class ImageViewer(QGraphicsView):
                 self._draw_preview = None
             self._draw_start = None
             if position is not None:
-                roi = roi_from_points(
-                    self._next_roi_number(),
-                    start[0],
-                    start[1],
-                    position[0],
-                    position[1],
-                    self._image_width,
-                    self._image_height,
-                )
-                if roi.width >= 4 and roi.height >= 4:
+                if self._automatic_minimum_roi_size is not None:
+                    left, top, width, height = self._drag_geometry(start, position)
+                    number = self._next_roi_number()
+                    roi = RoiData(
+                        number,
+                        f"ROI {number}",
+                        left,
+                        top,
+                        width,
+                        height,
+                    )
+                else:
+                    roi = roi_from_points(
+                        self._next_roi_number(),
+                        start[0],
+                        start[1],
+                        position[0],
+                        position[1],
+                        self._image_width,
+                        self._image_height,
+                    )
+                minimum = self._automatic_minimum_roi_size or 4
+                if roi.width >= minimum and roi.height >= minimum:
                     self.add_roi(roi)
             event.accept()
             return

@@ -32,7 +32,7 @@ if ($DotnetExe -and (& $DotnetExe --list-sdks)) {
     --clean `
     --windowed `
     --onedir `
-    --name "SS_PTool_V0.1.5" `
+    --name "SS_PTool_V0.1.6" `
     --paths (Join-Path $ProjectRoot "Source") `
     --collect-all matplotlib `
     --collect-all pyqtgraph `
@@ -46,4 +46,4 @@ if ($LASTEXITCODE -ne 0) {
     throw "실행파일 빌드에 실패했습니다. Exit code: $LASTEXITCODE"
 }
 
-Write-Host "빌드 완료: $ProjectRoot\dist\SS_PTool_V0.1.5\SS_PTool_V0.1.5.exe"
+Write-Host "빌드 완료: $ProjectRoot\dist\SS_PTool_V0.1.6\SS_PTool_V0.1.6.exe"

@@ -44,7 +44,7 @@ from imaging.measurement_archive import (
 )
 from camera import CameraConnectionSettings, CameraLinkClient
 from camera.camera_link_client import default_cam_file
-from imaging.roi import RoiData, load_rois, save_rois
+from imaging.roi import MAXIMUM_ROI_COUNT, RoiData, load_rois, save_rois
 from inspection import (
     MtfMeasurementSettings,
     analyze_roi,
@@ -64,6 +64,7 @@ from ui.optical_settings_dialog import OpticalSettingsDialog
 from ui.ri_contour_dialog import RiContourDialog
 from ui.distortion_result_dialog import DistortionResultDialog
 from ui.slanted_edge_curve_dialog import SlantedEdgeCurveDialog
+from inspection.slanted_edge import SLANTED_EDGE_MINIMUM_ROI_SIZE
 
 
 class _DistortionWorker(QObject):
@@ -267,7 +268,7 @@ class MainWindow(QMainWindow):
         roi_file_buttons.addWidget(self.save_roi_button)
         roi_file_buttons.addWidget(self.load_roi_button)
 
-        self.roi_count_label = QLabel("ROI: 0 / 4")
+        self.roi_count_label = QLabel(f"ROI: 0 / {MAXIMUM_ROI_COUNT}")
         self.roi_help_label = QLabel(
             "빈 영상 영역 드래그: ROI 생성\nROI 선택 후 Delete: 개별 삭제"
         )
@@ -808,7 +809,9 @@ class MainWindow(QMainWindow):
             roi.usaf_frequency_lpmm = self.global_lp_spin.value()
             roi.usaf_group = None
             roi.usaf_element = None
-        self.roi_count_label.setText(f"ROI: {len(rois)} / 4")
+        self.roi_count_label.setText(
+            f"ROI: {len(rois)} / {MAXIMUM_ROI_COUNT}"
+        )
         self.viewer.clear_measurement_results()
         if hasattr(self, "analysis_panel"):
             self.analysis_panel.clear_batch_result()
@@ -1200,6 +1203,9 @@ class MainWindow(QMainWindow):
         ri_mode = self._is_ri_mode()
         distortion_mode = self._is_distortion_mode()
         mtf_mode = not (ri_mode or distortion_mode)
+        self.viewer.set_automatic_minimum_roi_size(
+            SLANTED_EDGE_MINIMUM_ROI_SIZE if slanted_edge else None
+        )
         self.live_auto_result_checkbox.setVisible(slanted_edge)
         self.global_form.setRowVisible(self.global_lp_spin, mtf_mode)
         self.global_form.setRowVisible(self.global_mtf_spin, mtf_mode)

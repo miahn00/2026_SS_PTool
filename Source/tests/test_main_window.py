@@ -25,7 +25,7 @@ def test_main_window_starts_without_image(tmp_path) -> None:
 
     assert window._frame is None
     assert not window.viewer.has_image
-    assert window.windowTitle() == "SS Optical Performance Tool V0.1.5"
+    assert window.windowTitle() == "SS Optical Performance Tool V0.1.6"
     assert not window.live_auto_result_checkbox.isChecked()
     assert window.analysis_panel.result_table.height() >= 128
     assert window.measurement_mode_combo.currentText() == "Slanted Edge"
@@ -335,13 +335,13 @@ def test_viewer_limits_rois_and_clamps_position() -> None:
     window = MainWindow()
     window.viewer.set_image(QPixmap(640, 480), 640, 480)
 
-    for number in range(1, 5):
+    for number in range(1, 6):
         window.viewer.add_roi(
             RoiData(number, f"ROI {number}", number * 10, number * 10, 100, 80)
         )
 
-    with pytest.raises(ValueError, match="최대 4개"):
-        window.viewer.add_roi(RoiData(5, "ROI 5", 0, 0, 20, 20))
+    with pytest.raises(ValueError, match="최대 5개"):
+        window.viewer.add_roi(RoiData(6, "ROI 6", 0, 0, 20, 20))
 
     item = window.viewer.selected_roi()
     assert item is not None
@@ -350,6 +350,36 @@ def test_viewer_limits_rois_and_clamps_position() -> None:
     assert data.x == 540
     assert data.y == 400
 
+    window.close()
+    app.processEvents()
+
+
+def test_slanted_edge_drag_creates_at_least_32_pixels(tmp_path) -> None:
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow(tmp_path / "optical_settings.json")
+    window.viewer.resize(640, 480)
+    window.viewer.set_image(QPixmap(640, 480), 640, 480)
+    window.viewer.actual_size()
+    window.show()
+    app.processEvents()
+
+    start = window.viewer.mapFromScene(100, 80)
+    end = window.viewer.mapFromScene(105, 84)
+    QTest.mousePress(
+        window.viewer.viewport(), Qt.MouseButton.LeftButton, pos=start
+    )
+    QTest.mouseMove(window.viewer.viewport(), end, delay=10)
+    QTest.mouseRelease(
+        window.viewer.viewport(), Qt.MouseButton.LeftButton, pos=end
+    )
+    app.processEvents()
+
+    roi = window.viewer.roi_data()[0]
+    assert (roi.x, roi.y, roi.width, roi.height) == (100, 80, 32, 32)
+    assert window.viewer.selected_roi().minimum_size == 32
+
+    window.measurement_mode_combo.setCurrentText("USAF 차트")
+    assert window.viewer.selected_roi().minimum_size == 8
     window.close()
     app.processEvents()
 
@@ -405,6 +435,28 @@ def test_drag_creates_roi_and_delete_key_removes_it(tmp_path) -> None:
     app.processEvents()
     assert window.viewer.roi_data()[0].width > original_width
     assert window.viewer.roi_data()[0].height > original_height
+
+    enlarged = window.viewer.roi_data()[0]
+    shrink_handle = window.viewer.mapFromScene(
+        enlarged.x + enlarged.width,
+        enlarged.y + enlarged.height,
+    )
+    shrink_target = window.viewer.mapFromScene(enlarged.x + 2, enlarged.y + 2)
+    QTest.mousePress(
+        window.viewer.viewport(),
+        Qt.MouseButton.LeftButton,
+        pos=shrink_handle,
+    )
+    QTest.mouseMove(window.viewer.viewport(), shrink_target, delay=10)
+    QTest.mouseRelease(
+        window.viewer.viewport(),
+        Qt.MouseButton.LeftButton,
+        pos=shrink_target,
+    )
+    app.processEvents()
+    resized_roi = window.viewer.roi_data()[0]
+    assert resized_roi.width == 32
+    assert resized_roi.height == 32
 
     window.viewer.setFocus()
     QTest.keyClick(window.viewer, Qt.Key.Key_Delete)

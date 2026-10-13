@@ -15,14 +15,14 @@ from PySide6.QtWidgets import (
 
 from imaging.roi import RoiData
 
-ROI_COLORS = ("#ff5252", "#40c4ff", "#69f0ae", "#ffd740")
+ROI_COLORS = ("#ff5252", "#40c4ff", "#69f0ae", "#ffd740", "#e040fb")
 
 
 class RoiItem(QGraphicsRectItem):
     """원본 영상 좌표로 움직이는 사각형 ROI."""
 
     HANDLE_PIXELS = 16.0
-    MINIMUM_SIZE = 8.0
+    DEFAULT_MINIMUM_SIZE = 8.0
 
     def __init__(
         self,
@@ -31,6 +31,7 @@ class RoiItem(QGraphicsRectItem):
         image_height: int,
         changed: Callable[["RoiItem"], None],
         selected: Callable[["RoiItem"], None],
+        minimum_size: float = DEFAULT_MINIMUM_SIZE,
     ) -> None:
         super().__init__(0, 0, data.width, data.height)
         self.data = data
@@ -38,6 +39,7 @@ class RoiItem(QGraphicsRectItem):
         self.image_height = image_height
         self._changed_callback = changed
         self._selected_callback = selected
+        self.minimum_size = float(minimum_size)
         self._resizing = False
         self._active_handle: str | None = None
         self._original_geometry = QRectF()
@@ -70,6 +72,10 @@ class RoiItem(QGraphicsRectItem):
     def refresh_active(self) -> None:
         """활성 상태를 투명도로 구분한다."""
         self.setOpacity(1.0 if self.data.active else 0.4)
+
+    def set_minimum_size(self, size: float) -> None:
+        """Set the resize floor without changing existing ROI geometry."""
+        self.minimum_size = max(1.0, float(size))
 
     def apply_data(self) -> None:
         """데이터 모델의 좌표와 이름을 그래픽 항목에 반영한다."""
@@ -190,6 +196,16 @@ class RoiItem(QGraphicsRectItem):
     def mousePressEvent(self, event: QGraphicsSceneMouseEvent) -> None:
         handle = self._handle_at(event.pos())
         if handle is not None:
+            if (
+                self.rect().width() < self.minimum_size
+                or self.rect().height() < self.minimum_size
+            ):
+                width = min(float(self.image_width), max(self.rect().width(), self.minimum_size))
+                height = min(float(self.image_height), max(self.rect().height(), self.minimum_size))
+                x = min(max(self.pos().x(), 0.0), self.image_width - width)
+                y = min(max(self.pos().y(), 0.0), self.image_height - height)
+                self.setRect(0, 0, width, height)
+                self.setPos(x, y)
             self._resizing = True
             self._active_handle = handle
             self._press_scene_position = event.scenePos()
@@ -219,22 +235,22 @@ class RoiItem(QGraphicsRectItem):
         if self._active_handle in {"top_left", "bottom_left"}:
             left = min(
                 max(original.left() + delta.x(), 0.0),
-                original.right() - self.MINIMUM_SIZE,
+                original.right() - self.minimum_size,
             )
         if self._active_handle in {"top_right", "bottom_right"}:
             right = max(
                 min(original.right() + delta.x(), float(self.image_width)),
-                original.left() + self.MINIMUM_SIZE,
+                original.left() + self.minimum_size,
             )
         if self._active_handle in {"top_left", "top_right"}:
             top = min(
                 max(original.top() + delta.y(), 0.0),
-                original.bottom() - self.MINIMUM_SIZE,
+                original.bottom() - self.minimum_size,
             )
         if self._active_handle in {"bottom_left", "bottom_right"}:
             bottom = max(
                 min(original.bottom() + delta.y(), float(self.image_height)),
-                original.top() + self.MINIMUM_SIZE,
+                original.top() + self.minimum_size,
             )
 
         width = round(right - left)

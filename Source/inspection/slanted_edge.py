@@ -14,6 +14,9 @@ import cv2
 import numpy as np
 from numpy.typing import NDArray
 
+
+SLANTED_EDGE_MINIMUM_ROI_SIZE = 32
+
 from .mtf import (
     MtfCurve,
     MtfCurveEvaluationResult,
@@ -290,7 +293,10 @@ def calculate_slanted_edge_mtf_curve(
     apply_lsf_derivative_correction: bool = True,
 ) -> tuple[MtfCurve, str, float, float, float]:
     """ROI에서 object-side lp/mm MTF 곡선과 Edge 품질 정보를 반환한다."""
-    if roi_image.shape[0] < 32 or roi_image.shape[1] < 32:
+    if (
+        roi_image.shape[0] < SLANTED_EDGE_MINIMUM_ROI_SIZE
+        or roi_image.shape[1] < SLANTED_EDGE_MINIMUM_ROI_SIZE
+    ):
         raise ValueError("Slanted Edge ROI는 최소 32×32 픽셀이어야 합니다.")
     if oversampling < 2:
         raise ValueError("ESF oversampling은 2 이상이어야 합니다.")
@@ -366,7 +372,10 @@ def measure_slanted_edge(
 ) -> SlantedEdgeResult:
     """Slanted Edge MTF 곡선을 계산하고 평가 주파수에서 판정한다."""
     try:
-        if roi_image.shape[0] < 32 or roi_image.shape[1] < 32:
+        if (
+            roi_image.shape[0] < SLANTED_EDGE_MINIMUM_ROI_SIZE
+            or roi_image.shape[1] < SLANTED_EDGE_MINIMUM_ROI_SIZE
+        ):
             raise ValueError("Slanted Edge ROI는 최소 32×32 픽셀이어야 합니다.")
         (
             esf_bin_coverage,

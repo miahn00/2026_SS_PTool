@@ -7,6 +7,9 @@ import json
 from pathlib import Path
 
 
+MAXIMUM_ROI_COUNT = 5
+
+
 @dataclass(slots=True)
 class RoiData:
     """사각형 ROI의 원본 픽셀 좌표."""
@@ -135,7 +138,7 @@ def load_rois(
     image_width: int,
     image_height: int,
     *,
-    maximum_count: int = 4,
+    maximum_count: int = MAXIMUM_ROI_COUNT,
 ) -> list[RoiData]:
     """JSON에서 ROI를 읽고 개수, 번호, 영상 경계를 검증한다."""
     try:
