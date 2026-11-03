@@ -11,6 +11,7 @@ from app_version import APP_VERSION_TEXT
 from PySide6.QtCore import QObject, QThread, QTimer, Qt, Signal, Slot
 from PySide6.QtGui import QAction, QColor, QImage, QPixmap
 from PySide6.QtWidgets import (
+    QButtonGroup,
     QFileDialog,
     QFormLayout,
     QFrame,
@@ -20,6 +21,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPlainTextEdit,
     QPushButton,
+    QRadioButton,
     QComboBox,
     QCheckBox,
     QDoubleSpinBox,
@@ -323,7 +325,27 @@ class MainWindow(QMainWindow):
         self.distortion_limit_spin.valueChanged.connect(
             self._apply_global_roi_settings
         )
+        self.roi_guide_off_radio = QRadioButton("OFF")
+        self.roi_guide_on_radio = QRadioButton("ON")
+        self.roi_guide_off_radio.setChecked(True)
+        self.roi_guide_button_group = QButtonGroup(self)
+        self.roi_guide_button_group.setExclusive(True)
+        self.roi_guide_button_group.addButton(self.roi_guide_off_radio)
+        self.roi_guide_button_group.addButton(self.roi_guide_on_radio)
+        self.roi_guide_on_radio.toggled.connect(self._roi_guide_changed)
+        guide_layout = QHBoxLayout()
+        guide_layout.setContentsMargins(0, 0, 0, 0)
+        guide_layout.addWidget(self.roi_guide_off_radio)
+        guide_layout.addWidget(self.roi_guide_on_radio)
+        guide_layout.addStretch(1)
+        self.roi_guide_widget = QWidget()
+        self.roi_guide_widget.setLayout(guide_layout)
+        self.roi_guide_widget.setToolTip(
+            "화면에만 중앙 십자선과 대각선 기준 0.7 Field 원을 표시합니다. "
+            "측정 및 저장 영상에는 반영되지 않습니다."
+        )
         global_form = QFormLayout()
+        global_form.addRow("ROI 가이드", self.roi_guide_widget)
         global_form.addRow("평가 주파수 lp/mm", self.global_lp_spin)
         global_form.addRow("목표 MTF @ 평가주파수 %", self.global_mtf_spin)
         global_form.addRow("Slanted Edge 계산", self.slanted_edge_v002_checkbox)
@@ -1182,6 +1204,10 @@ class MainWindow(QMainWindow):
     def _is_distortion_mode(self) -> bool:
         return self.measurement_mode_combo.currentText() == "Distortion"
 
+    def _roi_guide_changed(self, checked: bool) -> None:
+        roi_mode = not (self._is_ri_mode() or self._is_distortion_mode())
+        self.viewer.set_roi_guide_enabled(bool(checked) and roi_mode)
+
     def _measurement_mode_changed(self, *_args) -> None:
         self._stop_live_roi_inspection()
         slanted_edge = self._is_slanted_edge_mode()
@@ -1221,6 +1247,10 @@ class MainWindow(QMainWindow):
             self.distortion_limit_spin, distortion_mode
         )
         roi_mode = not (ri_mode or distortion_mode)
+        self.global_form.setRowVisible(self.roi_guide_widget, roi_mode)
+        self.viewer.set_roi_guide_enabled(
+            roi_mode and self.roi_guide_on_radio.isChecked()
+        )
         self.roi_count_label.setVisible(roi_mode)
         self.roi_help_label.setVisible(roi_mode)
         self.clear_roi_button.setVisible(roi_mode)

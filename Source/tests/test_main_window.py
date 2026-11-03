@@ -25,10 +25,13 @@ def test_main_window_starts_without_image(tmp_path) -> None:
 
     assert window._frame is None
     assert not window.viewer.has_image
-    assert window.windowTitle() == "SS Optical Performance Tool V0.1.6"
+    assert window.windowTitle() == "SS Optical Performance Tool V0.1.7"
     assert not window.live_auto_result_checkbox.isChecked()
     assert window.analysis_panel.result_table.height() >= 128
     assert window.measurement_mode_combo.currentText() == "Slanted Edge"
+    assert window.roi_guide_off_radio.isChecked()
+    assert not window.roi_guide_on_radio.isChecked()
+    assert window.viewer._roi_guide_root is None
     assert window.slanted_edge_v002_checkbox.isChecked()
     assert not window.slanted_edge_v002_checkbox.isHidden()
     assert not hasattr(window, "roi_x_spin")
@@ -380,6 +383,64 @@ def test_slanted_edge_drag_creates_at_least_32_pixels(tmp_path) -> None:
 
     window.measurement_mode_combo.setCurrentText("USAF 차트")
     assert window.viewer.selected_roi().minimum_size == 8
+    window.close()
+    app.processEvents()
+
+
+def test_roi_guide_uses_center_and_diagonal_field_without_blocking_roi(
+    tmp_path,
+) -> None:
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow(tmp_path / "optical_settings.json")
+    window.viewer.resize(640, 512)
+    pixmap = QPixmap(640, 512)
+    window.viewer.set_image(pixmap, 640, 512)
+    window.viewer.actual_size()
+    window.show()
+    app.processEvents()
+
+    window.roi_guide_on_radio.setChecked(True)
+    app.processEvents()
+
+    horizontal = window.viewer._roi_guide_horizontal.line()
+    vertical = window.viewer._roi_guide_vertical.line()
+    field_rect = window.viewer._roi_guide_field.rect()
+    expected_radius = 0.7 * 0.5 * np.hypot(640, 512)
+    assert (horizontal.x1(), horizontal.y1(), horizontal.x2(), horizontal.y2()) == (
+        0.0,
+        256.0,
+        640.0,
+        256.0,
+    )
+    assert (vertical.x1(), vertical.y1(), vertical.x2(), vertical.y2()) == (
+        320.0,
+        0.0,
+        320.0,
+        512.0,
+    )
+    assert field_rect.center().x() == pytest.approx(320.0)
+    assert field_rect.center().y() == pytest.approx(256.0)
+    assert field_rect.width() / 2.0 == pytest.approx(expected_radius)
+
+    start = window.viewer.mapFromScene(320, 256)
+    end = window.viewer.mapFromScene(360, 296)
+    QTest.mousePress(
+        window.viewer.viewport(), Qt.MouseButton.LeftButton, pos=start
+    )
+    QTest.mouseMove(window.viewer.viewport(), end, delay=10)
+    QTest.mouseRelease(
+        window.viewer.viewport(), Qt.MouseButton.LeftButton, pos=end
+    )
+    app.processEvents()
+    assert len(window.viewer.roi_data()) == 1
+
+    window.measurement_mode_combo.setCurrentText("RI")
+    assert window.viewer._roi_guide_root is None
+    assert window.roi_guide_widget.isHidden()
+    window.measurement_mode_combo.setCurrentText("Slanted Edge")
+    assert window.viewer._roi_guide_root is not None
+    window.roi_guide_off_radio.setChecked(True)
+    assert window.viewer._roi_guide_root is None
     window.close()
     app.processEvents()
 
