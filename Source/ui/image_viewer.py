@@ -52,7 +52,8 @@ class ImageViewer(QGraphicsView):
         self._roi_guide_root: QGraphicsRectItem | None = None
         self._roi_guide_horizontal: QGraphicsLineItem | None = None
         self._roi_guide_vertical: QGraphicsLineItem | None = None
-        self._roi_guide_field: QGraphicsEllipseItem | None = None
+        self._roi_guide_field_06: QGraphicsEllipseItem | None = None
+        self._roi_guide_field_07: QGraphicsEllipseItem | None = None
         self._roi_drawing_enabled = True
         self._draw_start: tuple[int, int] | None = None
         self._draw_preview: QGraphicsRectItem | None = None
@@ -97,7 +98,7 @@ class ImageViewer(QGraphicsView):
         self.pixelHovered.emit(0, 0, False)
 
     def set_roi_guide_enabled(self, enabled: bool) -> None:
-        """Show or hide the display-only center and 0.7-field guide."""
+        """Show or hide the display-only center, 0.6- and 0.7-field guides."""
         self._roi_guide_enabled = bool(enabled)
         self._update_roi_guide()
 
@@ -107,7 +108,8 @@ class ImageViewer(QGraphicsView):
         self._roi_guide_root = None
         self._roi_guide_horizontal = None
         self._roi_guide_vertical = None
-        self._roi_guide_field = None
+        self._roi_guide_field_06 = None
+        self._roi_guide_field_07 = None
 
     def _update_roi_guide(self) -> None:
         self._clear_roi_guide()
@@ -123,7 +125,7 @@ class ImageViewer(QGraphicsView):
         height = float(self._image_height)
         center_x = width / 2.0
         center_y = height / 2.0
-        field_radius = 0.7 * 0.5 * float(np.hypot(width, height))
+        full_field_radius = 0.5 * float(np.hypot(width, height))
 
         root = QGraphicsRectItem(0.0, 0.0, width, height)
         root.setPen(QPen(Qt.PenStyle.NoPen))
@@ -137,32 +139,48 @@ class ImageViewer(QGraphicsView):
 
         cross_pen = QPen(QColor(0, 255, 255, 190), 1.0, Qt.PenStyle.DashLine)
         cross_pen.setCosmetic(True)
-        field_pen = QPen(QColor(255, 215, 0, 210), 1.0, Qt.PenStyle.DashLine)
-        field_pen.setCosmetic(True)
+        field_06_pen = QPen(QColor(0, 255, 170, 210), 1.0, Qt.PenStyle.DotLine)
+        field_07_pen = QPen(QColor(255, 215, 0, 210), 1.0, Qt.PenStyle.DashLine)
+        field_06_pen.setCosmetic(True)
+        field_07_pen.setCosmetic(True)
 
         horizontal = QGraphicsLineItem(0.0, center_y, width, center_y, root)
         vertical = QGraphicsLineItem(center_x, 0.0, center_x, height, root)
-        field = QGraphicsEllipseItem(
+        field_06_radius = 0.6 * full_field_radius
+        field_07_radius = 0.7 * full_field_radius
+        field_06 = QGraphicsEllipseItem(
             QRectF(
-                center_x - field_radius,
-                center_y - field_radius,
-                field_radius * 2.0,
-                field_radius * 2.0,
+                center_x - field_06_radius,
+                center_y - field_06_radius,
+                field_06_radius * 2.0,
+                field_06_radius * 2.0,
             ),
             root,
         )
-        for item in (horizontal, vertical, field):
+        field_07 = QGraphicsEllipseItem(
+            QRectF(
+                center_x - field_07_radius,
+                center_y - field_07_radius,
+                field_07_radius * 2.0,
+                field_07_radius * 2.0,
+            ),
+            root,
+        )
+        for item in (horizontal, vertical, field_06, field_07):
             item.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
         horizontal.setPen(cross_pen)
         vertical.setPen(cross_pen)
-        field.setPen(field_pen)
-        field.setBrush(QBrush(Qt.BrushStyle.NoBrush))
+        field_06.setPen(field_06_pen)
+        field_07.setPen(field_07_pen)
+        field_06.setBrush(QBrush(Qt.BrushStyle.NoBrush))
+        field_07.setBrush(QBrush(Qt.BrushStyle.NoBrush))
 
         self._scene.addItem(root)
         self._roi_guide_root = root
         self._roi_guide_horizontal = horizontal
         self._roi_guide_vertical = vertical
-        self._roi_guide_field = field
+        self._roi_guide_field_06 = field_06
+        self._roi_guide_field_07 = field_07
 
     def add_roi(self, data: RoiData) -> RoiItem:
         if len(self._roi_items) >= MAXIMUM_ROI_COUNT:

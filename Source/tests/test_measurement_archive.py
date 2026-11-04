@@ -4,6 +4,7 @@ import json
 
 import numpy as np
 import tifffile
+from matplotlib.figure import Figure
 
 from imaging.measurement_archive import (
     load_measurement_manifest,
@@ -64,3 +65,42 @@ def test_archive_uses_unique_measurement_folders(tmp_path) -> None:
     assert json.loads((second / "measurement.json").read_text(encoding="utf-8"))[
         "measurement_id"
     ] == second.name
+
+
+def test_archive_saves_popup_result_and_manifest_hash(tmp_path) -> None:
+    image = np.ones((48, 64), dtype=np.uint8)
+    rendered = np.repeat(image[..., None], 3, axis=2)
+    figure = Figure(figsize=(4, 3))
+    figure.add_subplot(111).plot([0, 1], [0, 1])
+
+    archive = save_measurement_archive(
+        tmp_path,
+        mode="RI",
+        image=image,
+        result_image=rendered,
+        result={"status": "PASS"},
+        settings={"algorithm_version": "ri-test"},
+        popup_figure=figure,
+    )
+
+    popup_path = archive / "popup_result.tiff"
+    assert popup_path.is_file()
+    assert tifffile.imread(popup_path).size > 0
+    payload = json.loads((archive / "measurement.json").read_text(encoding="utf-8"))
+    assert payload["image"]["popup_result_filename"] == popup_path.name
+    assert len(payload["image"]["popup_result_sha256"]) == 64
+
+
+def test_overlay_osd_stays_visible_for_edge_rois_and_long_labels() -> None:
+    image = np.zeros((80, 120), dtype=np.uint8)
+    roi = RoiData(1, "ROI 1", 110, 0, 10, 10)
+    rendered = render_result_overlay(
+        image,
+        mode="Slanted Edge",
+        status="INVALID",
+        rois=[roi],
+        roi_labels={1: "ROI 1 INVALID angle and contrast reason is very long"},
+    )
+
+    assert rendered.shape == (80, 120, 3)
+    assert np.count_nonzero(rendered) > 0

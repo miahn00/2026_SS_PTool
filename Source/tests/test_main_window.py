@@ -16,6 +16,23 @@ from imaging.roi import RoiData
 from camera import CameraConnectionSettings
 from camera.camera_link_client import default_cam_file
 from ui import MainWindow
+from ui.main_window import _slanted_edge_live_label
+
+
+def test_live_invalid_slanted_edge_label_shows_angle_contrast_and_reason() -> None:
+    result = SimpleNamespace(
+        status="INVALID",
+        edge_angle_degrees=0.4,
+        contrast_percent=8.2,
+        message="각도 범위 및 대비 부족",
+        quality_message="",
+    )
+
+    label = _slanted_edge_live_label(result, None)
+
+    assert "각도 0.4°" in label
+    assert "대비 8.2%" in label
+    assert "각도 범위 및 대비 부족" in label
 
 
 def test_main_window_starts_without_image(tmp_path) -> None:
@@ -25,7 +42,7 @@ def test_main_window_starts_without_image(tmp_path) -> None:
 
     assert window._frame is None
     assert not window.viewer.has_image
-    assert window.windowTitle() == "SS Optical Performance Tool V0.1.7"
+    assert window.windowTitle() == "SS Optical Performance Tool V0.1.8"
     assert not window.live_auto_result_checkbox.isChecked()
     assert window.analysis_panel.result_table.height() >= 128
     assert window.measurement_mode_combo.currentText() == "Slanted Edge"
@@ -404,8 +421,10 @@ def test_roi_guide_uses_center_and_diagonal_field_without_blocking_roi(
 
     horizontal = window.viewer._roi_guide_horizontal.line()
     vertical = window.viewer._roi_guide_vertical.line()
-    field_rect = window.viewer._roi_guide_field.rect()
-    expected_radius = 0.7 * 0.5 * np.hypot(640, 512)
+    field_06_rect = window.viewer._roi_guide_field_06.rect()
+    field_07_rect = window.viewer._roi_guide_field_07.rect()
+    expected_radius_06 = 0.6 * 0.5 * np.hypot(640, 512)
+    expected_radius_07 = 0.7 * 0.5 * np.hypot(640, 512)
     assert (horizontal.x1(), horizontal.y1(), horizontal.x2(), horizontal.y2()) == (
         0.0,
         256.0,
@@ -418,9 +437,12 @@ def test_roi_guide_uses_center_and_diagonal_field_without_blocking_roi(
         320.0,
         512.0,
     )
-    assert field_rect.center().x() == pytest.approx(320.0)
-    assert field_rect.center().y() == pytest.approx(256.0)
-    assert field_rect.width() / 2.0 == pytest.approx(expected_radius)
+    assert field_06_rect.center().x() == pytest.approx(320.0)
+    assert field_06_rect.center().y() == pytest.approx(256.0)
+    assert field_06_rect.width() / 2.0 == pytest.approx(expected_radius_06)
+    assert field_07_rect.center().x() == pytest.approx(320.0)
+    assert field_07_rect.center().y() == pytest.approx(256.0)
+    assert field_07_rect.width() / 2.0 == pytest.approx(expected_radius_07)
 
     start = window.viewer.mapFromScene(320, 256)
     end = window.viewer.mapFromScene(360, 296)

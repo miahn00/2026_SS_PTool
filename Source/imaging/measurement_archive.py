@@ -69,6 +69,7 @@ def save_measurement_archive(
     source_type: str = "file",
     source_filename: str = "",
     measured_at: datetime | None = None,
+    popup_figure: Any | None = None,
 ) -> Path:
     """Write one self-contained archive and verify the TIFF pixel round trip."""
     measured_at = measured_at or datetime.now().astimezone()
@@ -91,6 +92,7 @@ def save_measurement_archive(
     archive = _unique_directory(day_root, measurement_id)
     original_path = archive / "original.tiff"
     result_path = archive / "result.tiff"
+    popup_result_path = archive / "popup_result.tiff"
     manifest_path = archive / "measurement.json"
 
     try:
@@ -99,6 +101,15 @@ def save_measurement_archive(
         if not np.array_equal(original, reloaded):
             raise OSError("저장된 원본 TIFF의 픽셀이 측정 프레임과 일치하지 않습니다.")
         tifffile.imwrite(result_path, rendered, photometric="rgb" if rendered.ndim == 3 else "minisblack")
+        if popup_figure is not None:
+            popup_figure.savefig(
+                popup_result_path,
+                format="tiff",
+                dpi=150,
+                bbox_inches="tight",
+                pad_inches=0.15,
+                facecolor="white",
+            )
         payload = {
             "archive_version": 1,
             "measurement_id": archive.name,
@@ -118,11 +129,18 @@ def save_measurement_archive(
             "image": {
                 "filename": original_path.name,
                 "result_filename": result_path.name,
+                "popup_result_filename": (
+                    popup_result_path.name if popup_figure is not None else None
+                ),
                 "width": int(original.shape[1]),
                 "height": int(original.shape[0]),
                 "dtype": original.dtype.name,
                 "channels": 1 if original.ndim == 2 else int(original.shape[2]),
                 "sha256": _sha256(original_path),
+                "result_sha256": _sha256(result_path),
+                "popup_result_sha256": (
+                    _sha256(popup_result_path) if popup_figure is not None else None
+                ),
             },
             "settings": _json_value(settings),
             "rois": [roi.to_dict() for roi in (rois or [])],
@@ -133,7 +151,7 @@ def save_measurement_archive(
             encoding="utf-8",
         )
     except Exception:
-        for path in (manifest_path, result_path, original_path):
+        for path in (manifest_path, popup_result_path, result_path, original_path):
             path.unlink(missing_ok=True)
         try:
             archive.rmdir()
@@ -193,17 +211,17 @@ def render_result_overlay(
     scale = max(0.45, min(canvas.shape[:2]) / 600.0)
     thickness = max(1, int(round(scale * 2)))
     status_color = (0, 220, 0) if status in {"PASS", "VALID"} else (255, 70, 50)
-    cv2.putText(canvas, f"{mode}  {status}", (8, max(18, int(24 * scale))), cv2.FONT_HERSHEY_SIMPLEX, scale, status_color, thickness, cv2.LINE_AA)
+    _draw_text_inside(canvas, f"{mode}  {status}", 8, max(18, int(24 * scale)), scale, status_color, thickness)
     for roi in rois or []:
         color = (0, 220, 0) if status == "PASS" else (255, 190, 0)
         cv2.rectangle(canvas, (roi.x, roi.y), (roi.x + roi.width - 1, roi.y + roi.height - 1), color, thickness)
         label = (roi_labels or {}).get(roi.number, roi.name)
-        cv2.putText(canvas, label, (roi.x, max(12, roi.y - 4)), cv2.FONT_HERSHEY_SIMPLEX, scale * 0.7, color, thickness, cv2.LINE_AA)
+        _draw_text_inside(canvas, label, roi.x, roi.y - 4, scale * 0.7, color, thickness)
     color_map = {"CENTER": (0, 230, 100), "LOW": (255, 40, 40), "MID": (255, 180, 0), "OK": (40, 190, 255)}
     for (x, y, width, height), label, level in ri_cells or []:
         color = color_map.get(level, (40, 190, 255))
         cv2.rectangle(canvas, (x, y), (x + width - 1, y + height - 1), color, thickness)
-        cv2.putText(canvas, label, (x, max(12, y - 3)), cv2.FONT_HERSHEY_SIMPLEX, scale * 0.55, color, thickness, cv2.LINE_AA)
+        _draw_text_inside(canvas, label, x, y - 3, scale * 0.55, color, thickness)
     for points, color in ((fitted_points, (0, 176, 255)), (detected_points, (255, 0, 210))):
         if points is not None:
             for x, y in np.asarray(points):
@@ -215,3 +233,48 @@ def render_result_overlay(
     if center is not None:
         cv2.drawMarker(canvas, (int(round(center[0])), int(round(center[1]))), (255, 0, 0), cv2.MARKER_CROSS, max(8, thickness * 6), thickness)
     return canvas
+
+
+def _draw_text_inside(
+    canvas: np.ndarray,
+    text: str,
+    preferred_x: int,
+    preferred_baseline_y: int,
+    font_scale: float,
+    color: tuple[int, int, int],
+    thickness: int,
+) -> None:
+    """Draw one OSD line wholly inside the image, shrinking long text if needed."""
+    height, width = canvas.shape[:2]
+    padding = max(2, thickness + 1)
+    available_width = max(1, width - padding * 2)
+    actual_scale = font_scale
+    text_size, baseline = cv2.getTextSize(
+        text, cv2.FONT_HERSHEY_SIMPLEX, actual_scale, thickness
+    )
+    while text_size[0] > available_width and actual_scale > 0.25:
+        actual_scale = max(0.25, actual_scale * 0.85)
+        text_size, baseline = cv2.getTextSize(
+            text, cv2.FONT_HERSHEY_SIMPLEX, actual_scale, thickness
+        )
+    drawn_text = text
+    if text_size[0] > available_width:
+        suffix = "..."
+        while drawn_text and text_size[0] > available_width:
+            drawn_text = drawn_text[:-1]
+            text_size, baseline = cv2.getTextSize(
+                drawn_text + suffix,
+                cv2.FONT_HERSHEY_SIMPLEX,
+                actual_scale,
+                thickness,
+            )
+        drawn_text = drawn_text + suffix if drawn_text else suffix
+    x = min(max(int(preferred_x), padding), max(padding, width - text_size[0] - padding))
+    y = min(
+        max(int(preferred_baseline_y), text_size[1] + padding),
+        max(text_size[1] + padding, height - baseline - padding),
+    )
+    cv2.putText(
+        canvas, drawn_text, (x, y), cv2.FONT_HERSHEY_SIMPLEX,
+        actual_scale, color, thickness, cv2.LINE_AA,
+    )

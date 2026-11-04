@@ -69,6 +69,18 @@ from ui.slanted_edge_curve_dialog import SlantedEdgeCurveDialog
 from inspection.slanted_edge import SLANTED_EDGE_MINIMUM_ROI_SIZE
 
 
+def _slanted_edge_live_label(result, value: float | None) -> str:
+    """Return a compact live ROI label, including the reason for orange states."""
+    if result.status not in {"INVALID", "OUT_OF_RANGE"}:
+        return f"MTF {value:.1f}%" if value is not None else "MTF -"
+    metrics = (
+        f"각도 {result.edge_angle_degrees:.1f}° / "
+        f"대비 {result.contrast_percent:.1f}%"
+    )
+    reason = result.message.strip() or result.quality_message.strip() or result.status
+    return f"{metrics}\n{reason}"
+
+
 class _DistortionWorker(QObject):
     finished = Signal(object)
     failed = Signal(str)
@@ -531,6 +543,7 @@ class MainWindow(QMainWindow):
         algorithm_version: str,
         rois: list[RoiData] | None = None,
         frame_number: int | None = None,
+        popup_figure=None,
     ) -> Path | None:
         source_type = (
             "camera"
@@ -555,6 +568,7 @@ class MainWindow(QMainWindow):
                 frame_number=actual_frame_number,
                 source_type=source_type,
                 source_filename=Path(source_path).name if source_path else "",
+                popup_figure=popup_figure,
             )
         except (OSError, TypeError, ValueError) as exc:
             QMessageBox.warning(
@@ -1145,8 +1159,12 @@ class MainWindow(QMainWindow):
                     if measurement else None
                 )
                 roi_number = item.roi_number
-            text = f"MTF {value:.1f}%" if value is not None else "MTF -"
             item_status = item.result.status if hasattr(item, "result") else item.status
+            text = (
+                _slanted_edge_live_label(item.result, value)
+                if hasattr(item, "result")
+                else (f"MTF {value:.1f}%" if value is not None else "MTF -")
+            )
             self.viewer.set_roi_measurement_result(roi_number, item_status, text)
 
         if not (
@@ -1340,6 +1358,7 @@ class MainWindow(QMainWindow):
             result={"measurement": result, "judgment": judgment},
             algorithm_version="smia-tv-distortion-v1",
             frame_number=self._distortion_analysis_frame_number,
+            popup_figure=self._distortion_result_dialog.figure,
         )
         if judgment == "INVALID":
             QMessageBox.warning(
@@ -1467,6 +1486,7 @@ class MainWindow(QMainWindow):
             result={"measurement": result, "evaluation": evaluation},
             algorithm_version="ri-grid-v1",
             frame_number=int(getattr(self._frame, "frame_number", 0)),
+            popup_figure=self._ri_contour_dialog.figure,
         )
 
     def _analyze_selected_slanted_edge(self, item) -> None:
@@ -1600,6 +1620,7 @@ class MainWindow(QMainWindow):
             ),
             rois=rois,
             frame_number=frame_number,
+            popup_figure=self._slanted_edge_curve_dialog.figure,
         )
 
     def _update_info(self, frame: ImageFrame) -> None:
