@@ -70,6 +70,7 @@ def save_measurement_archive(
     source_filename: str = "",
     measured_at: datetime | None = None,
     popup_figure: Any | None = None,
+    corrected_image: np.ndarray | None = None,
 ) -> Path:
     """Write one self-contained archive and verify the TIFF pixel round trip."""
     measured_at = measured_at or datetime.now().astimezone()
@@ -93,6 +94,7 @@ def save_measurement_archive(
     original_path = archive / "original.tiff"
     result_path = archive / "result.tiff"
     popup_result_path = archive / "popup_result.tiff"
+    corrected_path = archive / "black_level_corrected.tiff"
     manifest_path = archive / "measurement.json"
 
     try:
@@ -101,6 +103,17 @@ def save_measurement_archive(
         if not np.array_equal(original, reloaded):
             raise OSError("저장된 원본 TIFF의 픽셀이 측정 프레임과 일치하지 않습니다.")
         tifffile.imwrite(result_path, rendered, photometric="rgb" if rendered.ndim == 3 else "minisblack")
+        if corrected_image is not None:
+            corrected = np.asarray(corrected_image)
+            if corrected.dtype != np.uint16 or corrected.shape != original.shape:
+                raise ValueError(
+                    "Black Level 보정 영상은 원본과 같은 크기의 uint16이어야 합니다."
+                )
+            tifffile.imwrite(
+                corrected_path,
+                corrected,
+                photometric="minisblack" if corrected.ndim == 2 else "rgb",
+            )
         if popup_figure is not None:
             popup_figure.savefig(
                 popup_result_path,
@@ -132,6 +145,9 @@ def save_measurement_archive(
                 "popup_result_filename": (
                     popup_result_path.name if popup_figure is not None else None
                 ),
+                "black_level_corrected_filename": (
+                    corrected_path.name if corrected_image is not None else None
+                ),
                 "width": int(original.shape[1]),
                 "height": int(original.shape[0]),
                 "dtype": original.dtype.name,
@@ -140,6 +156,9 @@ def save_measurement_archive(
                 "result_sha256": _sha256(result_path),
                 "popup_result_sha256": (
                     _sha256(popup_result_path) if popup_figure is not None else None
+                ),
+                "black_level_corrected_sha256": (
+                    _sha256(corrected_path) if corrected_image is not None else None
                 ),
             },
             "settings": _json_value(settings),
@@ -151,7 +170,13 @@ def save_measurement_archive(
             encoding="utf-8",
         )
     except Exception:
-        for path in (manifest_path, popup_result_path, result_path, original_path):
+        for path in (
+            manifest_path,
+            popup_result_path,
+            corrected_path,
+            result_path,
+            original_path,
+        ):
             path.unlink(missing_ok=True)
         try:
             archive.rmdir()

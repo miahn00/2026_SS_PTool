@@ -91,6 +91,31 @@ def test_archive_saves_popup_result_and_manifest_hash(tmp_path) -> None:
     assert len(payload["image"]["popup_result_sha256"]) == 64
 
 
+def test_archive_saves_black_level_corrected_uint16_image(tmp_path) -> None:
+    image = np.arange(48 * 64, dtype=np.uint16).reshape(48, 64) + 25000
+    corrected = np.maximum(image.astype(np.int32) - 25000, 0).astype(np.uint16)
+    rendered = np.repeat((corrected // 16).astype(np.uint8)[..., None], 3, axis=2)
+
+    archive = save_measurement_archive(
+        tmp_path,
+        mode="USAF 차트",
+        image=image,
+        corrected_image=corrected,
+        result_image=rendered,
+        result={"status": "PASS"},
+        settings={
+            "algorithm_version": "usaf-test",
+            "black_level_correction": {"enabled": True, "applied_level": 25000},
+        },
+    )
+
+    corrected_path = archive / "black_level_corrected.tiff"
+    assert np.array_equal(tifffile.imread(corrected_path), corrected)
+    payload = json.loads((archive / "measurement.json").read_text(encoding="utf-8"))
+    assert payload["image"]["black_level_corrected_filename"] == corrected_path.name
+    assert len(payload["image"]["black_level_corrected_sha256"]) == 64
+
+
 def test_overlay_osd_stays_visible_for_edge_rois_and_long_labels() -> None:
     image = np.zeros((80, 120), dtype=np.uint8)
     roi = RoiData(1, "ROI 1", 110, 0, 10, 10)

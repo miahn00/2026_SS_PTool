@@ -42,7 +42,7 @@ def test_main_window_starts_without_image(tmp_path) -> None:
 
     assert window._frame is None
     assert not window.viewer.has_image
-    assert window.windowTitle() == "SS Optical Performance Tool V0.1.8"
+    assert window.windowTitle() == "SS Optical Performance Tool V0.1.9"
     assert not window.live_auto_result_checkbox.isChecked()
     assert window.analysis_panel.result_table.height() >= 128
     assert window.measurement_mode_combo.currentText() == "Slanted Edge"
@@ -50,6 +50,9 @@ def test_main_window_starts_without_image(tmp_path) -> None:
     assert not window.roi_guide_on_radio.isChecked()
     assert window.viewer._roi_guide_root is None
     assert window.slanted_edge_v002_checkbox.isChecked()
+    assert not window.black_level_checkbox.isChecked()
+    assert window.black_level_spin.value() == 25000
+    assert not window.black_level_spin.isEnabled()
     assert not window.slanted_edge_v002_checkbox.isHidden()
     assert not hasattr(window, "roi_x_spin")
     assert not hasattr(window, "roi_width_spin")

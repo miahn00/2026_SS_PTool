@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 from concurrent.futures import Future, ThreadPoolExecutor
+from collections import deque
 from datetime import datetime
 from pathlib import Path
+import time
 
 import numpy as np
 from app_version import APP_VERSION_TEXT
@@ -43,6 +45,15 @@ from imaging.measurement_archive import (
     load_measurement_manifest,
     render_result_overlay,
     save_measurement_archive,
+)
+from imaging.black_level import (
+    DEFAULT_BLACK_LEVEL,
+    RECOMMENDED_BLACK_LEVEL_MAX,
+    RECOMMENDED_BLACK_LEVEL_MIN,
+    apply_black_level,
+    estimate_black_level,
+    recommended_black_level,
+    temporal_black_level,
 )
 from camera import CameraConnectionSettings, CameraLinkClient
 from camera.camera_link_client import default_cam_file
@@ -138,6 +149,11 @@ class MainWindow(QMainWindow):
         self._live_analysis_future: Future | None = None
         self._live_pass_streak = 0
         self._live_auto_finalized = False
+        self._black_level_samples: deque[tuple[float, int]] = deque()
+        self._black_level_sampling_started: float | None = None
+        self._black_level_estimated: int | None = None
+        self._black_level_user_modified = False
+        self._updating_black_level = False
         self._live_executor = ThreadPoolExecutor(max_workers=1)
         self._live_signals = _LiveAnalysisSignals(self)
         self._live_signals.finished.connect(self._show_live_roi_values)
@@ -307,6 +323,28 @@ class MainWindow(QMainWindow):
         self.slanted_edge_v002_checkbox.toggled.connect(
             self._slanted_edge_method_changed
         )
+        self.black_level_checkbox = QCheckBox("추정 Black Level 보정")
+        self.black_level_checkbox.setChecked(False)
+        self.black_level_checkbox.setToolTip(
+            "uint16 원본 측정 배열에서 지정값을 차감합니다. "
+            "원본 TIFF와 화면 표시에는 적용하지 않습니다."
+        )
+        self.black_level_checkbox.toggled.connect(self._black_level_toggled)
+        self.black_level_spin = QSpinBox()
+        self.black_level_spin.setRange(0, 65535)
+        self.black_level_spin.setValue(DEFAULT_BLACK_LEVEL)
+        self.black_level_spin.setEnabled(False)
+        self.black_level_spin.valueChanged.connect(self._black_level_value_changed)
+        self.black_level_status_label = QLabel(
+            f"권장 {RECOMMENDED_BLACK_LEVEL_MIN}~{RECOMMENDED_BLACK_LEVEL_MAX}"
+        )
+        black_level_layout = QHBoxLayout()
+        black_level_layout.setContentsMargins(0, 0, 0, 0)
+        black_level_layout.addWidget(self.black_level_checkbox)
+        black_level_layout.addWidget(self.black_level_spin)
+        black_level_layout.addWidget(self.black_level_status_label)
+        self.black_level_widget = QWidget()
+        self.black_level_widget.setLayout(black_level_layout)
         self.global_frequency_tolerance_spin = QDoubleSpinBox()
         self.global_frequency_tolerance_spin.setRange(0, 100)
         self.global_frequency_tolerance_spin.setDecimals(2)
@@ -361,6 +399,7 @@ class MainWindow(QMainWindow):
         global_form.addRow("평가 주파수 lp/mm", self.global_lp_spin)
         global_form.addRow("목표 MTF @ 평가주파수 %", self.global_mtf_spin)
         global_form.addRow("Slanted Edge 계산", self.slanted_edge_v002_checkbox)
+        global_form.addRow("Black Level", self.black_level_widget)
         global_form.addRow(
             "패턴 주파수 검증 허용오차 %",
             self.global_frequency_tolerance_spin,
@@ -443,6 +482,8 @@ class MainWindow(QMainWindow):
         self._set_window_controls(frame)
         self._set_pixmap(pixmap)
         self._update_info(frame)
+        if self.black_level_checkbox.isChecked():
+            self._set_file_black_level_recommendation(frame.image)
         self.statusBar().showMessage(f"열기 완료: {Path(file_path).name}")
 
     def open_measurement_data(self) -> None:
@@ -505,6 +546,18 @@ class MainWindow(QMainWindow):
             self.slanted_edge_v002_checkbox.setChecked(
                 bool(settings["lsf_derivative_correction"])
             )
+        black_settings = settings.get("black_level_correction", {})
+        if isinstance(black_settings, dict):
+            enabled = bool(black_settings.get("enabled", False))
+            applied = int(black_settings.get("applied_level", DEFAULT_BLACK_LEVEL))
+            self._set_black_level_controls(enabled, applied)
+            estimated = black_settings.get("estimated_level")
+            self._black_level_estimated = (
+                int(estimated) if estimated is not None else None
+            )
+            self._update_black_level_status()
+        else:
+            self._set_black_level_controls(False, DEFAULT_BLACK_LEVEL)
         if rois and mode not in {"RI", "Distortion"}:
             self.viewer.replace_rois(rois)
         self.statusBar().showMessage(
@@ -531,6 +584,7 @@ class MainWindow(QMainWindow):
             "ri_grid_columns": 33,
             "ri_inner_fraction": 0.5,
             "distortion_model": "5th order radial with decentering",
+            "black_level_correction": self._black_level_settings(),
         }
 
     def _save_measurement(
@@ -544,6 +598,7 @@ class MainWindow(QMainWindow):
         rois: list[RoiData] | None = None,
         frame_number: int | None = None,
         popup_figure=None,
+        black_level: int | None = None,
     ) -> Path | None:
         source_type = (
             "camera"
@@ -557,18 +612,27 @@ class MainWindow(QMainWindow):
             else int(getattr(self._frame, "frame_number", 0))
         )
         try:
+            corrected_image = (
+                apply_black_level(image, black_level)
+                if black_level is not None else None
+            )
+            settings = self._measurement_settings(algorithm_version)
+            black_settings = settings["black_level_correction"]
+            black_settings["enabled"] = black_level is not None
+            black_settings["applied_level"] = black_level
             archive = save_measurement_archive(
                 self._measurement_archive_root,
                 mode=mode,
                 image=image,
                 result_image=result_image,
                 result=result,
-                settings=self._measurement_settings(algorithm_version),
+                settings=settings,
                 rois=rois,
                 frame_number=actual_frame_number,
                 source_type=source_type,
                 source_filename=Path(source_path).name if source_path else "",
                 popup_figure=popup_figure,
+                corrected_image=corrected_image,
             )
         except (OSError, TypeError, ValueError) as exc:
             QMessageBox.warning(
@@ -622,10 +686,16 @@ class MainWindow(QMainWindow):
     def _camera_frame_received(
         self, image: np.ndarray, frame_number: int, fps: float, channel_state: str
     ) -> None:
+        first_camera_frame = self._frame is None or self._frame.source_type != "camera"
+        if first_camera_frame and self.black_level_checkbox.isChecked():
+            self._black_level_samples.clear()
+            self._black_level_sampling_started = None
+            self._black_level_estimated = None
+            self._black_level_user_modified = False
         self._latest_live_image = image
         self._latest_live_frame_number = frame_number
+        self._collect_live_black_level(image)
         if not self._live_display_frozen:
-            first_camera_frame = self._frame is None or self._frame.source_type != "camera"
             self._set_live_frame(image, frame_number, fps, channel_state, first_camera_frame)
         if not self._live_display_frozen:
             self.statusBar().showMessage(
@@ -757,6 +827,117 @@ class MainWindow(QMainWindow):
         self.maximum_spin.setValue(int(high))
         self._updating_window_controls = False
         self._apply_display_window()
+
+    def _set_black_level_controls(self, enabled: bool, level: int) -> None:
+        self._updating_black_level = True
+        self.black_level_checkbox.setChecked(enabled)
+        self.black_level_spin.setValue(max(0, min(65535, int(level))))
+        self.black_level_spin.setEnabled(enabled)
+        self._updating_black_level = False
+
+    def _black_level_toggled(self, checked: bool) -> None:
+        self.black_level_spin.setEnabled(checked)
+        self._black_level_samples.clear()
+        self._black_level_sampling_started = None
+        self._black_level_estimated = None
+        self._black_level_user_modified = False
+        if not checked:
+            self._update_black_level_status()
+            return
+        if self._frame is not None and self._frame.source_type != "camera":
+            self._set_file_black_level_recommendation(self._frame.image)
+        else:
+            self.black_level_status_label.setText("Raw uint16 추정 대기")
+
+    def _black_level_value_changed(self, _value: int) -> None:
+        if not self._updating_black_level:
+            self._black_level_user_modified = True
+        self._update_black_level_status()
+
+    def _set_file_black_level_recommendation(self, image: np.ndarray) -> None:
+        if image.dtype != np.uint16:
+            self._set_black_level_controls(False, self.black_level_spin.value())
+            self.black_level_status_label.setText("uint16 원본만 지원")
+            return
+        self._black_level_estimated = estimate_black_level(image)
+        self._updating_black_level = True
+        self.black_level_spin.setValue(
+            recommended_black_level(self._black_level_estimated)
+        )
+        self._updating_black_level = False
+        self._black_level_user_modified = False
+        self._update_black_level_status()
+
+    def _collect_live_black_level(self, image: np.ndarray) -> None:
+        if not self.black_level_checkbox.isChecked() or image.dtype != np.uint16:
+            return
+        now = time.monotonic()
+        if self._black_level_sampling_started is None:
+            self._black_level_sampling_started = now
+        self._black_level_samples.append((now, estimate_black_level(image)))
+        while self._black_level_samples and now - self._black_level_samples[0][0] > 3.0:
+            self._black_level_samples.popleft()
+        elapsed = now - self._black_level_sampling_started
+        values = [value for _, value in self._black_level_samples]
+        if elapsed < 3.0 or len(values) < 2:
+            self.black_level_status_label.setText(
+                f"Raw 추정 중 {min(3.0, elapsed):.1f}/3.0초"
+            )
+            return
+        self._black_level_estimated = temporal_black_level(values)
+        if not self._black_level_user_modified:
+            self._updating_black_level = True
+            self.black_level_spin.setValue(
+                recommended_black_level(self._black_level_estimated)
+            )
+            self._updating_black_level = False
+        self._update_black_level_status()
+
+    def _update_black_level_status(self) -> None:
+        if not self.black_level_checkbox.isChecked():
+            self.black_level_status_label.setText(
+                f"OFF | 권장 {RECOMMENDED_BLACK_LEVEL_MIN}~{RECOMMENDED_BLACK_LEVEL_MAX}"
+            )
+            return
+        estimated = (
+            str(self._black_level_estimated)
+            if self._black_level_estimated is not None else "-"
+        )
+        applied = self.black_level_spin.value()
+        warning = (
+            " | 권장범위 밖"
+            if not RECOMMENDED_BLACK_LEVEL_MIN <= applied <= RECOMMENDED_BLACK_LEVEL_MAX
+            else ""
+        )
+        self.black_level_status_label.setText(
+            f"추정 {estimated} | 적용 {applied}{warning}"
+        )
+
+    def _active_black_level(self, image: np.ndarray) -> int | None:
+        if not self.black_level_checkbox.isChecked():
+            return None
+        if image.dtype != np.uint16:
+            return None
+        return self.black_level_spin.value()
+
+    def _measurement_image(
+        self, image: np.ndarray, black_level: int | None = None
+    ) -> np.ndarray:
+        level = self._active_black_level(image) if black_level is None else black_level
+        return apply_black_level(image, level) if level is not None else image
+
+    def _black_level_settings(self) -> dict:
+        enabled = self.black_level_checkbox.isChecked()
+        return {
+            "enabled": enabled,
+            "method": "image_estimated_user_adjustable" if enabled else "OFF",
+            "estimated_level": self._black_level_estimated if enabled else None,
+            "recommended_min": RECOMMENDED_BLACK_LEVEL_MIN,
+            "recommended_max": RECOMMENDED_BLACK_LEVEL_MAX,
+            "applied_level": self.black_level_spin.value() if enabled else None,
+            "user_modified": self._black_level_user_modified if enabled else False,
+            "live_estimation_seconds": 3.0 if enabled else None,
+        }
 
     def _fit_image(self) -> None:
         self.viewer.fit_to_window()
@@ -917,8 +1098,12 @@ class MainWindow(QMainWindow):
         if self._is_slanted_edge_mode():
             self._analyze_selected_slanted_edge(item)
             return
+        black_level = self._active_black_level(self._frame.image)
+        measurement_image = self._measurement_image(
+            self._frame.image, black_level
+        )
         try:
-            result = analyze_roi(self._frame.image, item.to_data())
+            result = analyze_roi(measurement_image, item.to_data())
         except ValueError as exc:
             QMessageBox.critical(self, "ROI 분석 오류", str(exc))
             return
@@ -1003,8 +1188,11 @@ class MainWindow(QMainWindow):
             self._analyze_all_slanted_edge(rois)
             return
 
+        image = np.array(self._frame.image, copy=True)
+        black_level = self._active_black_level(image)
+        measurement_image = self._measurement_image(image, black_level)
         result = measure_rois_mtf(
-            self._frame.image,
+            measurement_image,
             rois,
             reference_frequency_lpmm=self.global_lp_spin.value(),
             target_mtf_percent=self.global_mtf_spin.value(),
@@ -1026,6 +1214,7 @@ class MainWindow(QMainWindow):
             text = (
                 f"{roi_result.chart_frequency_lpmm:.2f} lp/mm\n"
                 f"MTF {measurement.mtf_at_detected_frequency_percent:.1f}%"
+                + (f"\nBL {black_level}" if black_level is not None else "")
                 if measurement
                 else roi_result.status
             )
@@ -1036,6 +1225,32 @@ class MainWindow(QMainWindow):
             )
         self.statusBar().showMessage(
             f"전체 ROI 검사: {result.overall_status} - {result.message}"
+        )
+        labels = {
+            item.roi_number: (
+                f"ROI {item.roi_number} {item.status} "
+                f"MTF {item.measurement.mtf_at_detected_frequency_percent:.1f}%"
+                if item.measurement is not None
+                else f"ROI {item.roi_number} {item.status}"
+            )
+            for item in result.roi_results
+        }
+        result_image = render_result_overlay(
+            measurement_image,
+            mode="USAF",
+            status=result.overall_status,
+            rois=rois,
+            roi_labels=labels,
+        )
+        self._save_measurement(
+            mode="USAF 차트",
+            image=image,
+            result_image=result_image,
+            result=result,
+            algorithm_version="usaf-ctf-v1",
+            rois=rois,
+            frame_number=int(getattr(self._frame, "frame_number", 0)),
+            black_level=black_level,
         )
 
     def _start_live_roi_inspection(self) -> None:
@@ -1073,6 +1288,12 @@ class MainWindow(QMainWindow):
             return
         if self._live_analysis_future is not None and not self._live_analysis_future.done():
             return
+        if (
+            self.black_level_checkbox.isChecked()
+            and self._black_level_estimated is None
+        ):
+            self.statusBar().showMessage("Black Level Raw 추정 중: 3초 후 측정을 시작합니다.")
+            return
         image = np.array(self._latest_live_image, copy=True)
         frame_number = self._latest_live_frame_number
         rois = self.viewer.roi_data()
@@ -1087,6 +1308,7 @@ class MainWindow(QMainWindow):
             "magnification": self._optical_settings.magnification,
             "tolerance": self.global_frequency_tolerance_spin.value(),
             "lsf": self.slanted_edge_v002_checkbox.isChecked(),
+            "black_level": self._active_black_level(image),
         }
         future = self._live_executor.submit(
             self._calculate_live_roi_values,
@@ -1101,9 +1323,13 @@ class MainWindow(QMainWindow):
 
     @staticmethod
     def _calculate_live_roi_values(image, rois, mode, settings, frame_number=0):
+        measurement_image = (
+            apply_black_level(image, settings["black_level"])
+            if settings.get("black_level") is not None else image
+        )
         if mode == "Slanted Edge":
             result = measure_rois_slanted_edge(
-                image,
+                measurement_image,
                 rois,
                 pixel_pitch_x_um=settings["pitch_x"],
                 pixel_pitch_y_um=settings["pitch_y"],
@@ -1114,7 +1340,7 @@ class MainWindow(QMainWindow):
             )
         else:
             result = measure_rois_mtf(
-                image,
+                measurement_image,
                 rois,
                 reference_frequency_lpmm=settings["reference"],
                 target_mtf_percent=settings["target"],
@@ -1129,6 +1355,7 @@ class MainWindow(QMainWindow):
             "rois": rois,
             "mode": mode,
             "frame_number": frame_number,
+            "black_level": settings.get("black_level"),
         }
 
     def _live_analysis_completed(self, future: Future) -> None:
@@ -1165,6 +1392,8 @@ class MainWindow(QMainWindow):
                 if hasattr(item, "result")
                 else (f"MTF {value:.1f}%" if value is not None else "MTF -")
             )
+            if isinstance(outcome, dict) and outcome.get("black_level") is not None:
+                text += f"\nBL {outcome['black_level']}"
             self.viewer.set_roi_measurement_result(roi_number, item_status, text)
 
         if not (
@@ -1200,6 +1429,7 @@ class MainWindow(QMainWindow):
             outcome["rois"],
             outcome["image"],
             outcome["frame_number"],
+            outcome.get("black_level"),
         )
 
     @Slot(str)
@@ -1256,6 +1486,7 @@ class MainWindow(QMainWindow):
         self.global_form.setRowVisible(
             self.slanted_edge_v002_checkbox, slanted_edge
         )
+        self.global_form.setRowVisible(self.black_level_widget, mtf_mode)
         self.global_form.setRowVisible(
             self.global_frequency_tolerance_spin,
             not slanted_edge and mtf_mode,
@@ -1493,8 +1724,12 @@ class MainWindow(QMainWindow):
         assert self._frame is not None
         from inspection import extract_roi
 
+        black_level = self._active_black_level(self._frame.image)
+        measurement_image = self._measurement_image(
+            self._frame.image, black_level
+        )
         result = measure_slanted_edge(
-            extract_roi(self._frame.image, item.to_data()),
+            extract_roi(measurement_image, item.to_data()),
             self._optical_settings.pixel_pitch_x_um,
             self._optical_settings.pixel_pitch_y_um,
             self._optical_settings.magnification,
@@ -1513,6 +1748,8 @@ class MainWindow(QMainWindow):
             and evaluation.mtf_at_reference_frequency_percent is not None
             else result.status
         )
+        if black_level is not None:
+            text += f"\nBL {black_level}"
         self.viewer.set_roi_measurement_result(
             item.data.number,
             result.status,
@@ -1525,8 +1762,10 @@ class MainWindow(QMainWindow):
     def _analyze_all_slanted_edge(self, rois: list[RoiData]) -> None:
         assert self._frame is not None
         image = np.array(self._frame.image, copy=True)
+        black_level = self._active_black_level(image)
+        measurement_image = self._measurement_image(image, black_level)
         result = measure_rois_slanted_edge(
-            image,
+            measurement_image,
             rois,
             pixel_pitch_x_um=self._optical_settings.pixel_pitch_x_um,
             pixel_pitch_y_um=self._optical_settings.pixel_pitch_y_um,
@@ -1542,6 +1781,7 @@ class MainWindow(QMainWindow):
             rois,
             image,
             int(getattr(self._frame, "frame_number", 0)),
+            black_level,
         )
 
     def _present_slanted_edge_result(
@@ -1550,6 +1790,7 @@ class MainWindow(QMainWindow):
         rois: list[RoiData],
         image: np.ndarray,
         frame_number: int,
+        black_level: int | None = None,
     ) -> None:
         self.analysis_panel.show_slanted_edge_batch_result(
             result,
@@ -1581,6 +1822,8 @@ class MainWindow(QMainWindow):
                 and evaluation.mtf_at_reference_frequency_percent is not None
                 else item.result.status
             )
+            if black_level is not None:
+                text += f"\nBL {black_level}"
             self.viewer.set_roi_measurement_result(
                 item.roi_number,
                 item.result.status,
@@ -1602,7 +1845,7 @@ class MainWindow(QMainWindow):
                 else f"ROI {item.roi_number} {item.result.status}"
             )
         result_image = render_result_overlay(
-            image,
+            self._measurement_image(image, black_level),
             mode="Slanted Edge",
             status=result.overall_status,
             rois=rois,
@@ -1621,6 +1864,7 @@ class MainWindow(QMainWindow):
             rois=rois,
             frame_number=frame_number,
             popup_figure=self._slanted_edge_curve_dialog.figure,
+            black_level=black_level,
         )
 
     def _update_info(self, frame: ImageFrame) -> None:
