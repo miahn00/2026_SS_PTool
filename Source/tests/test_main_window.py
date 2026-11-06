@@ -42,9 +42,12 @@ def test_main_window_starts_without_image(tmp_path) -> None:
 
     assert window._frame is None
     assert not window.viewer.has_image
-    assert window.windowTitle() == "SS Optical Performance Tool V0.1.9"
+    assert window.windowTitle() == "SS Optical Performance Tool V0.1.10"
     assert not window.live_auto_result_checkbox.isChecked()
     assert window.analysis_panel.result_table.height() >= 128
+    assert window.analysis_panel.profile_plot.isHidden()
+    assert window.analysis_panel.fft_plot.isHidden()
+    assert not window.analysis_panel.result_table.isHidden()
     assert window.measurement_mode_combo.currentText() == "Slanted Edge"
     assert window.roi_guide_off_radio.isChecked()
     assert not window.roi_guide_on_radio.isChecked()
@@ -234,9 +237,46 @@ def test_usaf_mode_uses_common_evaluation_frequency(
     assert not hasattr(window, "roi_usaf_group_spin")
     assert not hasattr(window, "roi_usaf_element_spin")
     assert not window.global_frequency_tolerance_spin.isHidden()
+    assert not window.analysis_dock.isHidden()
 
     window.measurement_mode_combo.setCurrentText("Slanted Edge")
     assert window.global_frequency_tolerance_spin.isHidden()
+    assert not window.analysis_dock.isHidden()
+    window.close()
+    app.processEvents()
+
+
+def test_usaf_measurement_opens_profile_popup(tmp_path, monkeypatch) -> None:
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow(tmp_path / "optical_settings.json")
+    x = np.arange(128)
+    bars = np.where((x // 8) % 2 == 0, 50000, 10000).astype(np.uint16)
+    image = np.tile(bars, (96, 1))
+    window.viewer.set_image(QPixmap(128, 96), 128, 96)
+    window.viewer.add_roi(RoiData(1, "ROI 1", 0, 0, 128, 96))
+    window._frame = SimpleNamespace(
+        image=image,
+        width=128,
+        height=96,
+        source_path=tmp_path / "usaf16.tiff",
+        source_type="file",
+        frame_number=0,
+    )
+    window.measurement_mode_combo.setCurrentText("USAF 차트")
+    saved = []
+    monkeypatch.setattr(window, "_save_measurement", lambda **kwargs: saved.append(kwargs))
+
+    window._analyze_all_rois()
+
+    assert window._usaf_result_dialog is not None
+    assert window._usaf_result_dialog.tabs.count() == 1
+    assert not window.analysis_dock.isHidden()
+    assert window.analysis_panel.profile_plot.isHidden()
+    assert window.analysis_panel.fft_plot.isHidden()
+    assert window.analysis_panel.result_table.rowCount() == 1
+    assert "전체 판정:" in window.analysis_panel.overall_label.text()
+    assert saved[0]["popup_figure"] is window._usaf_result_dialog.figure
+    assert saved[0]["result"].roi_results[0].raw_profile.shape == (128,)
     window.close()
     app.processEvents()
 

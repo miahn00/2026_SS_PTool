@@ -77,6 +77,7 @@ from ui.optical_settings_dialog import OpticalSettingsDialog
 from ui.ri_contour_dialog import RiContourDialog
 from ui.distortion_result_dialog import DistortionResultDialog
 from ui.slanted_edge_curve_dialog import SlantedEdgeCurveDialog
+from ui.usaf_result_dialog import UsafResultDialog
 from inspection.slanted_edge import SLANTED_EDGE_MINIMUM_ROI_SIZE
 
 
@@ -132,6 +133,7 @@ class MainWindow(QMainWindow):
         self._ri_contour_dialog: RiContourDialog | None = None
         self._distortion_result_dialog: DistortionResultDialog | None = None
         self._slanted_edge_curve_dialog: SlantedEdgeCurveDialog | None = None
+        self._usaf_result_dialog: UsafResultDialog | None = None
         self._distortion_thread: QThread | None = None
         self._distortion_worker: _DistortionWorker | None = None
         self._distortion_analysis_image: np.ndarray | None = None
@@ -171,6 +173,7 @@ class MainWindow(QMainWindow):
         self._build_menu()
         self._build_content()
         self._build_analysis_dock()
+        self._update_measurement_mode_ui()
         self.statusBar().showMessage(settings_notice)
 
     def _load_or_create_settings(self) -> tuple[OpticalSettings, str]:
@@ -446,11 +449,11 @@ class MainWindow(QMainWindow):
 
     def _build_analysis_dock(self) -> None:
         self.analysis_panel = AnalysisPanel()
-        dock = QDockWidget("ROI 분석", self)
-        dock.setObjectName("roi_analysis_dock")
-        dock.setWidget(self.analysis_panel)
-        dock.setMinimumHeight(430)
-        self.addDockWidget(Qt.DockWidgetArea.BottomDockWidgetArea, dock)
+        self.analysis_dock = QDockWidget("ROI 분석", self)
+        self.analysis_dock.setObjectName("roi_analysis_dock")
+        self.analysis_dock.setWidget(self.analysis_panel)
+        self.analysis_dock.setMinimumHeight(430)
+        self.addDockWidget(Qt.DockWidgetArea.BottomDockWidgetArea, self.analysis_dock)
 
     def open_image(self) -> None:
         if self._camera_client.is_connected:
@@ -1203,11 +1206,29 @@ class MainWindow(QMainWindow):
                 self.global_frequency_tolerance_spin.value()
             ),
         )
+        if self._usaf_result_dialog is not None:
+            self._usaf_result_dialog.close()
+        source_path = getattr(self._frame, "source_path", None)
+        source_filename = Path(source_path).name if source_path else "-"
+        self._usaf_result_dialog = UsafResultDialog(
+            measurement_image,
+            rois,
+            result,
+            analyzed_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            source_filename=source_filename,
+            reference_frequency_lpmm=self.global_lp_spin.value(),
+            target_mtf_percent=self.global_mtf_spin.value(),
+            black_level=black_level,
+            parent=self,
+        )
         self.analysis_panel.show_batch_result(
             result,
             self.global_lp_spin.value(),
             self.global_mtf_spin.value(),
         )
+        self._usaf_result_dialog.show()
+        self._usaf_result_dialog.raise_()
+        self._usaf_result_dialog.activateWindow()
         self.viewer.clear_measurement_results()
         for roi_result in result.roi_results:
             measurement = roi_result.measurement
@@ -1250,6 +1271,7 @@ class MainWindow(QMainWindow):
             algorithm_version="usaf-ctf-v1",
             rois=rois,
             frame_number=int(getattr(self._frame, "frame_number", 0)),
+            popup_figure=self._usaf_result_dialog.figure,
             black_level=black_level,
         )
 
@@ -1438,6 +1460,9 @@ class MainWindow(QMainWindow):
 
     def _is_slanted_edge_mode(self) -> bool:
         return self.measurement_mode_combo.currentText() == "Slanted Edge"
+
+    def _is_usaf_mode(self) -> bool:
+        return self.measurement_mode_combo.currentText() == "USAF 차트"
 
     def _slanted_edge_method_changed(self, checked: bool) -> None:
         self.viewer.clear_measurement_results()

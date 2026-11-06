@@ -45,6 +45,8 @@ class AnalysisPanel(QWidget):
         self.fft_plot.setLabel("left", "Normalized magnitude")
         self.profile_plot.setMinimumHeight(90)
         self.fft_plot.setMinimumHeight(90)
+        self.profile_plot.setVisible(False)
+        self.fft_plot.setVisible(False)
         self.overall_label = QLabel("전체 판정: -")
         self.overall_label.setStyleSheet(
             "QLabel { font-size: 15px; font-weight: bold; padding: 6px; }"
@@ -222,8 +224,10 @@ class AnalysisPanel(QWidget):
         reference_frequency_lpmm: float,
         target_mtf_percent: float,
     ) -> None:
-        self.profile_plot.setVisible(True)
-        self.fft_plot.setVisible(True)
+        # USAF keeps the common judgment sheet/table in this dock. Detailed
+        # brightness profiles are presented in the dedicated result popup.
+        self.profile_plot.setVisible(False)
+        self.fft_plot.setVisible(False)
         self.result_table.setColumnCount(10)
         self.result_table.setHorizontalHeaderLabels(
             [
@@ -444,6 +448,8 @@ class AnalysisPanel(QWidget):
 
     def clear_batch_result(self) -> None:
         self.result_table.setVisible(True)
+        self.profile_plot.setVisible(False)
+        self.fft_plot.setVisible(False)
         self.overall_label.setText("전체 판정: -")
         self.overall_label.setStyleSheet(
             "QLabel { font-size: 15px; font-weight: bold; padding: 6px; }"

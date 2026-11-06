@@ -30,6 +30,7 @@ class RoiMtfResult:
     measurement: MtfMeasurementResult | None = None
     usaf_group: int | None = None
     usaf_element: int | None = None
+    raw_profile: NDArray[np.float64] | None = None
 
 
 @dataclass(slots=True, frozen=True)
@@ -136,6 +137,7 @@ def measure_rois_mtf(
                 measurement,
                 roi.usaf_group,
                 roi.usaf_element,
+                analysis.raw_profile.copy(),
             )
         )
 

@@ -44,6 +44,7 @@ def test_batch_mtf_all_pass() -> None:
     assert result.curve_evaluation is None
     assert all(item.chart_frequency_lpmm == 8.0 for item in result.roi_results)
     assert [item.detected_direction for item in result.roi_results] == ["V", "H"]
+    assert [item.raw_profile.shape for item in result.roi_results] == [(128,), (128,)]
 
 
 def test_batch_mtf_invalid_included_roi_makes_overall_invalid() -> None:
